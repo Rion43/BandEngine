@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BandEngine Demo — Mi Band 9</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌚</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet" />
+</head>
+<body>
+  <div id="app">
+    <header style="display:flex;align-items:center;justify-content:space-between">
+      <h1>BandEngine <small>Xiaomi Smart Band 9 · BLE Demo</small></h1>
+      <div id="status"><span class="dot" id="status-dot"></span><span id="status-text">Idle</span></div>
+    </header>
+
+    <!-- Controls -->
+    <div class="btn-row">
+      <button class="primary" id="btn-connect">🔗 Connect</button>
+      <button id="btn-disconnect" disabled>⏏ Disconnect</button>
+    </div>
+
+    <!-- Battery -->
+    <div class="panel" id="panel-battery" style="display:none">
+      <h2>🔋 Battery</h2>
+      <div class="stat-grid">
+        <div class="stat-card"><div class="value" id="val-battery">—</div><div class="label">Level</div></div>
+        <div class="stat-card"><div class="value" id="val-charging" style="font-size:18px">—</div><div class="label">Status</div></div>
+      </div>
+    </div>
+
+    <!-- Heart Rate -->
+    <div class="panel" id="panel-hr" style="display:none">
+      <h2>❤️ Heart Rate</h2>
+      <div class="btn-row" style="margin-bottom:12px">
+        <button class="primary" id="btn-hr-start">▶ Start</button>
+        <button class="danger" id="btn-hr-stop" disabled>■ Stop</button>
+      </div>
+      <div class="stat-grid" style="margin-bottom:12px">
+        <div class="stat-card"><div class="value" id="val-hr">— <span class="unit">bpm</span></div><div class="label">Current</div></div>
+      </div>
+      <div id="hr-chart"></div>
+    </div>
+
+    <!-- Log -->
+    <div class="panel">
+      <h2>📋 BLE Log</h2>
+      <div id="log"><div class="entry info"><span class="time">──</span> Ready. Click Connect.</div></div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

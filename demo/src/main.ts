@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '2.3';
+const VERSION = '2.4';
 
 // ═══════════════════════════════════════════
 // CONSTANTS

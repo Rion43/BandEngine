@@ -2,7 +2,7 @@ import './style.css';
 import { log, hex } from './logger.js';
 
 // ═══════════════════════════════════════════
-// LTK WIZARD — Mi Fitness backup'tan auth_key çıkar
+// LTK WIZARD — Mi Fitness backup'tan encrypt_key çıkar
 // ═══════════════════════════════════════════
 
 declare const JSZip: any;
@@ -17,92 +17,243 @@ function showMainUI() {
   document.getElementById('main-ui')!.style.display = '';
 }
 
-// ── SQLite WASM yükleyici (3 fallback, tüm ortamlar) ──
+// ── SQLite WASM yükleyici ──
 const SQLITE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0';
-
 let _SQL: any = null;
 async function getSQL(): Promise<any> {
   if (_SQL) return _SQL;
-
-  // Fallback 1: locateFile ile CDN
   const errors: string[] = [];
   for (const base of [SQLITE_CDN, 'https://unpkg.com/sql.js@1.11.0/dist', 'https://cdn.jsdelivr.net/npm/sql.js@1.11.0/dist']) {
-    try {
-      _SQL = await initSqlJs({
-        locateFile: (f: string) => `${base}/${f}`,
-      });
-      return _SQL;
-    } catch (e: any) {
-      errors.push(`${base}: ${e.message}`);
+    try { _SQL = await initSqlJs({ locateFile: (f: string) => `${base}/${f}` }); return _SQL; }
+    catch (e: any) { errors.push(`${base}: ${e.message}`); }
+  }
+  try { _SQL = await initSqlJs({ locateFile: () => '' }); return _SQL; } catch {}
+  throw new Error(`SQLite yuklenemedi: ${errors.join(' | ')}`);
+}
+
+// ── Binary Plist (bplist00) parser ──
+function parseBPList(buf: Uint8Array): any {
+  const magic = new TextDecoder().decode(buf.slice(0, 8));
+  if (magic !== 'bplist00') throw new Error('Not bplist00');
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const len = buf.length;
+  const tr = len - 32;
+  const offTableOff = Number(dv.getBigUint64(tr + 8, false));
+  const numObj = Number(dv.getBigUint64(tr + 16, false));
+  const rootIdx = dv.getUint32(tr + 24, false);
+  const offSz = (tr - offTableOff) / numObj;
+  const offs: number[] = [];
+  for (let i = 0; i < numObj; i++) {
+    const p = offTableOff + i * offSz;
+    if (offSz === 1) offs.push(buf[p]);
+    else if (offSz === 2) offs.push(dv.getUint16(p, false));
+    else if (offSz === 4) offs.push(dv.getUint32(p, false));
+    else offs.push(Number(dv.getBigUint64(p, false)));
+  }
+
+  function refSize() { return numObj <= 256 ? 1 : numObj <= 65536 ? 2 : 4; }
+
+  function readObj(pos: number): any {
+    const b = buf[pos];
+    const type = (b >> 4) & 0xf;
+    const info = b & 0xf;
+    let p = pos + 1;
+
+    function readLen(): { length: number, after: number } {
+      if (info <= 0x0e) return { length: info, after: p };
+      // info == 0x0f: length follows as inline int byte
+      const sub = buf[p]; p++;
+      const subType = (sub >> 4) & 0xf;
+      let subInfo = sub & 0xf;
+      // Sometimes it's 0x1_ format = integer with byte count from nibble
+      // Actually in bplist, after 0x0f, the next byte indicates int sizing:
+      // bits: 0x1k where k=0→1B, 1→2B, 2→4B, 3→8B
+      let intBytes: number;
+      if (subType === 1) intBytes = 1 << subInfo; // proper integer encoding
+      else intBytes = 1 << (sub & 0x03); // fallback
+      let length = 0;
+      for (let i = 0; i < intBytes; i++) { length = (length << 8) | buf[p]; p++; }
+      return { length, after: p };
+    }
+
+    switch (type) {
+      case 0: return null;
+      case 1: return false;
+      case 2: return true;
+      case 4: { // integer
+        const byteLen = 1 << info;
+        if (byteLen === 1) return buf[p];
+        if (byteLen === 2) return dv.getUint16(p, false);
+        if (byteLen === 4) return dv.getUint32(p, false);
+        if (byteLen === 8) return Number(dv.getBigUint64(p, false));
+        return 0;
+      }
+      case 5: return info === 2 ? dv.getFloat32(p, false) : dv.getFloat64(p, false);
+      case 6: return dv.getFloat64(p, false);
+      case 8: { // data
+        const { length, after } = readLen();
+        return buf.slice(after, after + length);
+      }
+      case 9: { // ASCII string
+        const { length, after } = readLen();
+        return new TextDecoder().decode(buf.slice(after, after + length));
+      }
+      case 0xa: { // Unicode string (UTF-16BE)
+        const { length, after } = readLen();
+        const chars: string[] = [];
+        for (let i = 0; i < length; i++) {
+          const cp = (buf[after + i * 2] << 8) | buf[after + i * 2 + 1];
+          chars.push(String.fromCharCode(cp));
+        }
+        return chars.join('');
+      }
+      case 0xc: { // array
+        const { length, after } = readLen();
+        const rs = refSize();
+        const arr: any[] = [];
+        for (let i = 0; i < length; i++) {
+          let idx: number;
+          if (rs === 1) idx = buf[after + i];
+          else if (rs === 2) idx = dv.getUint16(after + i * 2, false);
+          else idx = dv.getUint32(after + i * 4, false);
+          arr.push(readObj(offs[idx]));
+        }
+        return arr;
+      }
+      case 0xd: { // dictionary
+        const { length, after } = readLen();
+        const rs = refSize();
+        const keyRefs: number[] = [];
+        const valRefs: number[] = [];
+        const keyArea = after;
+        const valArea = after + length * rs;
+        for (let i = 0; i < length; i++) {
+          if (rs === 1) { keyRefs.push(buf[keyArea + i]); valRefs.push(buf[valArea + i]); }
+          else if (rs === 2) { keyRefs.push(dv.getUint16(keyArea + i * 2, false)); valRefs.push(dv.getUint16(valArea + i * 2, false)); }
+          else { keyRefs.push(dv.getUint32(keyArea + i * 4, false)); valRefs.push(dv.getUint32(valArea + i * 4, false)); }
+        }
+        const dict: any = {};
+        for (let i = 0; i < length; i++) {
+          const k = readObj(offs[keyRefs[i]]);
+          if (k != null) dict[String(k)] = readObj(offs[valRefs[i]]);
+        }
+        return dict;
+      }
+      default: return null;
     }
   }
 
-  // Fallback 2: WASM olmadan çalıştır (bazı browser'lar destekler)
-  try {
-    _SQL = await initSqlJs({ locateFile: () => '' });
-    return _SQL;
-  } catch {}
-
-  throw new Error(`SQLite yuklenemedi (3 CDN denendi): ${errors.join(' | ')}`);
+  return readObj(offs[rootIdx]);
 }
 
-// ── LTK çıkarıcı (tüm DB şemalarını dene) ──
+// ── NSKeyedArchiver'dan encrypt_key çıkar ──
+function extractKeyFromArchiver(root: any): string | null {
+  if (!root || typeof root !== 'object') return null;
+
+  // NSKeyedArchiver: root.$objects + root.$top
+  if (root.$archiver !== 'NSKeyedArchiver') {
+    // Düz dictionary olabilir (iOS 15+)
+    return findKeyInDict(root);
+  }
+
+  const objects: any[] = root.$objects || [];
+  const top = root.$top;
+  if (!top || !objects.length) return null;
+
+  // $top'taki ilk değere git
+  const topKeys = Object.keys(top);
+  if (!topKeys.length) return null;
+  const topRef = top[topKeys[0]];
+  // NSKeyedArchiver'da $top değeri bir NSObject (dictionary) veya $UID referansı
+  let realRoot: any = null;
+  if (topRef && typeof topRef === 'object' && topRef.$UID != null) {
+    realRoot = objects[topRef.$UID];
+  } else if (typeof topRef === 'number') {
+    realRoot = objects[topRef];
+  } else {
+    realRoot = topRef;
+  }
+
+  return findKeyInDict(realRoot);
+}
+
+function findKeyInDict(obj: any): string | null {
+  if (!obj || typeof obj !== 'object') return null;
+
+  // Doğrudan encrypt_key varsa
+  for (const key of ['encrypt_key', 'encryptkey', 'EncryptKey', 'LTK', 'ltk', 'auth_key']) {
+    const val = obj[key];
+    if (val) {
+      const hex = toHex(val);
+      if (hex && hex.length === 32) return hex;
+    }
+  }
+
+  // İç içe dolaş
+  for (const k of Object.keys(obj)) {
+    const v = obj[k];
+    if (v && typeof v === 'object') {
+      const r = findKeyInDict(v);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+function toHex(val: any): string | null {
+  if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val.toLowerCase();
+  if (val instanceof Uint8Array || val?.buffer instanceof ArrayBuffer) {
+    const arr = val instanceof Uint8Array ? val : new Uint8Array(val);
+    if (arr.length === 16) {
+      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  // NSData from bplist: berimbil boxed
+  if (val?.$UID != null) return null; // skip refs
+  return null;
+}
+
+// ── manifest.sqlite'den key çıkar ──
 async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
   const SQL = await getSQL();
   const db = new SQL.Database(new Uint8Array(buffer));
 
-  // Tüm tablo+sütun isimlerini al
+  // Tüm tabloları listele
   const tables: any[] = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
   const tableNames = tables.flatMap(t => t.values.map((v: any) => v));
 
-  // Önce device_key tablosunu dene
-  const target = tableNames.find((n: string) =>
-    /device_key|devicekey|keychain|secure_key/i.test(n)
-  );
-  if (target) {
-    const info: any[] = db.exec(`PRAGMA table_info(${target})`);
+  // manifest tablosu + inline_data sütunu
+  for (const t of tableNames) {
+    const info: any[] = db.exec(`PRAGMA table_info(${t})`);
     const cols = info[0]?.values.map((v: any) => v[1]) ?? [];
-    const keyCol = cols.find((c: string) => /auth_key|encrypt_key|key_value|value|ltk/i.test(c));
-    if (keyCol) {
-      const rows: any[] = db.exec(`SELECT ${keyCol} FROM ${target} LIMIT 10`);
-      for (const r of rows) {
-        const v = r.values[0]?.[0];
-        if (typeof v === 'string' && /^[0-9a-f]{32}$/i.test(v)) { db.close(); return v; }
-        if (v instanceof Uint8Array) {
-          const h = Array.from(v).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-          if (h.length === 32) { db.close(); return h; }
-        }
+    const dataCol = cols.find((c: string) => /inline_data|data|blob|value/i.test(c));
+    if (!dataCol) continue;
+    const rows: any[] = db.exec(`SELECT ${dataCol} FROM ${t} LIMIT 20`);
+    for (const row of rows) {
+      for (const val of row.values) {
+        if (!val) continue;
+        const bytes: Uint8Array = val instanceof Uint8Array ? val : new Uint8Array(val);
+        // bplist00 magic byte check
+        if (bytes.length < 12 || bytes[0] !== 0x62 /*b*/) continue;
+        try {
+          const plist = parseBPList(bytes);
+          if (!plist) continue;
+          const key = extractKeyFromArchiver(plist);
+          if (key) { db.close(); return key; }
+        } catch {}
       }
     }
   }
 
-  // Fallback: tüm tablolardaki 32 char hex değerleri ara
-  for (const t of tableNames) {
-    try {
-      const info: any[] = db.exec(`PRAGMA table_info(${t})`);
-      const cnames = info[0]?.values.map((v: any) => v[1]) ?? [];
-      if (!cnames.some((c: string) => /auth|key|encrypt|secure/i.test(c))) continue;
-      const rows: any[] = db.exec(`SELECT * FROM ${t} LIMIT 20`);
-      for (const row of rows) {
-        for (const val of row.values) {
-          if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) { db.close(); return val; }
-          if (val instanceof Uint8Array) {
-            const h = Array.from(val).map((b: number) => b.toString(16).padStart(2, '0')).join('');
-            if (h.length === 32) { db.close(); return h; }
-          }
-        }
-      }
-    } catch {}
-  }
   db.close();
   return null;
 }
 
 async function detectFileType(buffer: ArrayBuffer): Promise<'zip' | 'sqlite' | null> {
   const h = new Uint8Array(buffer.slice(0, 16));
-  const hex = Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('');
-  if (hex.startsWith('504b0304')) return 'zip';
-  if (hex.startsWith('53514c697465')) return 'sqlite';
+  const hexStr = Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('');
+  if (hexStr.startsWith('504b0304')) return 'zip';
+  if (hexStr.startsWith('53514c697465')) return 'sqlite';
   return null;
 }
 
@@ -111,8 +262,6 @@ async function handleFile(file: File) {
   ws.className = 'wizard-status loading';
   ws.innerHTML = '⏳ Dosya işleniyor…';
   ws.style.display = 'block';
-
-  // Butonu gizle (tekrar tıklanırsa yeniden başlasın)
   document.getElementById('btn-connect-wizard')!.style.display = 'none';
 
   try {
@@ -131,7 +280,6 @@ async function handleFile(file: File) {
         if (dbFile) break;
       }
       if (!dbFile) {
-        // Tüm .sqlite/.db dosyalarını tara
         const all = Object.keys(zip.files).filter(f => /\.(sqlite|db)$/i.test(f));
         if (all.length === 0) throw new Error('ZIP içinde SQLite veritabanı bulunamadı.');
         dbFile = zip.file(all[0]);

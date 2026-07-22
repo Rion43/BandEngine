@@ -18,7 +18,9 @@ function showMainUI() {
 }
 
 async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
-  const SQL = await initSqlJs();
+  const SQL = await initSqlJs({
+    locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/${file}`,
+  });
   const db = new SQL.Database(new Uint8Array(buffer));
 
   // device_key tablosu, auth_key sütunu

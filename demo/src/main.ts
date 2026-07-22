@@ -1,9 +1,193 @@
 import './style.css';
 import { log, hex } from './logger.js';
 
-// ── UI refs ──
-const $ = (id: string) => document.getElementById(id)!;
+// ═══════════════════════════════════════════
+// LTK WIZARD — Mi Fitness backup'tan auth_key çıkar
+// ═══════════════════════════════════════════
 
+declare const JSZip: any;
+declare const initSqlJs: any;
+
+function showWizard() {
+  document.getElementById('wizard')!.style.display = '';
+  document.getElementById('main-ui')!.style.display = 'none';
+}
+function showMainUI() {
+  document.getElementById('wizard')!.style.display = 'none';
+  document.getElementById('main-ui')!.style.display = '';
+}
+
+async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
+  const SQL = await initSqlJs();
+  const db = new SQL.Database(new Uint8Array(buffer));
+
+  // device_key tablosu, auth_key sütunu
+  const tables: any[] = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
+  const tableNames = tables.flatMap(t => t.values.map((v: string) => v));
+
+  // device_key veya benzeri tabloları ara
+  const targetTable = tableNames.find((n: string) =>
+    n.toLowerCase().includes('device_key') || n.toLowerCase().includes('devicekey')
+  );
+
+  if (!targetTable) {
+    // fallback: tüm tabloları tara
+    for (const tname of tableNames) {
+      try {
+        const cols = db.exec(`PRAGMA table_info(${tname})`);
+        const colNames = cols[0]?.values.map((v: any) => v[1]) ?? [];
+        if (colNames.some((c: string) => /auth_key|encrypt_key|ltk/i.test(c))) {
+          const rows = db.exec(`SELECT * FROM ${tname} LIMIT 10`);
+          for (const row of rows) {
+            for (const val of row.values[0]) {
+              if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val;
+            }
+          }
+        }
+      } catch {}
+    }
+    return null;
+  }
+
+  // device_key tablosundan auth_key oku
+  const rows = db.exec(`SELECT auth_key FROM ${targetTable} LIMIT 10`);
+  for (const row of rows) {
+    const val = row.values[0]?.[0];
+    if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val;
+    if (val instanceof Uint8Array) {
+      const hex = Array.from(val).map(b => b.toString(16).padStart(2, '0')).join('');
+      if (hex.length === 32) return hex;
+    }
+  }
+  return null;
+}
+
+async function handleFile(file: File) {
+  const ws = document.getElementById('wizard-status')!;
+  ws.className = 'wizard-status loading';
+  ws.textContent = '⏳ Dosya işleniyor…';
+  ws.style.display = 'block';
+
+  try {
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    let buffer: ArrayBuffer;
+    let key: string | null = null;
+
+    if (ext === 'zip') {
+      // Android backup ZIP
+      const zipData = await file.arrayBuffer();
+      const zip = await JSZip.loadAsync(zipData);
+
+      // manifest.sqlite veya .db dosyasını bul
+      let dbFile = zip.file(/manifest\.sqlite/i)[0] ||
+                   zip.file(/\.db$/i)[0] ||
+                   zip.file(/device_key/i)[0];
+      if (!dbFile) {
+        // Tüm dosyaları listele, .db/sqlite ara
+        const allFiles = Object.keys(zip.files).filter(f =>
+          /\.(sqlite|db)$/i.test(f) || /device/i.test(f) || /auth/i.test(f)
+        );
+        if (allFiles.length === 0) throw new Error('ZIP içinde SQLite dosyası bulunamadı');
+        dbFile = zip.file(allFiles[0]);
+      }
+
+      const dbData = await dbFile.async('arraybuffer');
+      key = await extractKeyFromDB(dbData);
+
+    } else if (ext === 'sqlite') {
+      // iPhone manifest.sqlite
+      buffer = await file.arrayBuffer();
+      key = await extractKeyFromDB(buffer);
+    } else {
+      throw new Error('Desteklenmeyen dosya türü. .zip (Android) veya .sqlite (iPhone) kullanın.');
+    }
+
+    if (!key) {
+      ws.className = 'wizard-status error';
+      ws.innerHTML = '❌ Güvenlik anahtarı bu dosyada bulunamadı.';
+      return;
+    }
+
+    // localStorage'a kaydet
+    localStorage.setItem('be_ltk', key);
+    ws.className = 'wizard-status success';
+    ws.innerHTML = '<span class="check">✅</span> Güvenlik Anahtarı Başarıyla Alındı<p style="font-size:12px;margin-top:4px;opacity:.8">Artık bu cihazda tekrar dosya seçmeniz gerekmeyecek.</p>';
+
+    // Bağlan butonunu göster
+    const btn = document.getElementById('btn-connect-wizard')!;
+    btn.style.display = '';
+    btn.onclick = () => { showMainUI(); startConnect(); };
+
+  } catch (e: any) {
+    ws.className = 'wizard-status error';
+    const msg = e.message.includes('ZIP') ? '❌ Log dosyası açılamadı.' :
+                e.message.includes('SQLite') || e.message.includes('sqlite') ? '❌ manifest.sqlite okunamadı.' :
+                '❌ ' + e.message;
+    ws.innerHTML = msg;
+  }
+}
+
+// ═══════════════════════════════════════════
+// CONSTANTS (RE: Mi Fitness protocol)
+// ═══════════════════════════════════════════
+
+const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
+  HEART_RATE_SUBSCRIBE: 69, HEART_RATE_UNSUBSCRIBE: 70,
+  BATTERY_INFO: 12, NOTIFICATION_PUSH: 41, NOTIFICATION_CLEAR: 42,
+};
+const CATEGORIES = { SYSTEM: 1, HEALTH: 2, ACTIVITY: 3, NOTIFICATION: 4, DEVICE: 5 };
+
+// ═══════════════════════════════════════════
+// CRYPTO (RE: Session.ts, AESCTR.ts, HKDF.ts)
+// ═══════════════════════════════════════════
+
+async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', k, data as any);
+  return new Uint8Array(sig);
+}
+
+async function hkdfDerive(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array): Promise<Uint8Array> {
+  const prk = await hmacSha256(ikm, salt);
+  const result = new Uint8Array(64);
+  let prev = new Uint8Array(0);
+  for (let i = 1; i <= 2; i++) {
+    const d = new Uint8Array(prev.length + info.length + 1);
+    d.set(prev); d.set(info, prev.length); d[d.length - 1] = i;
+    const r = await hmacSha256(prk, d);
+    result.set(new Uint8Array(r), (i - 1) * 32);
+    prev = new Uint8Array(r);
+  }
+  return result;
+}
+
+async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array, counter: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key as any, { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
+  return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CTR', counter: counter as any, length: 128 }, k, data as any));
+}
+
+// ═══════════════════════════════════════════
+// PROTOCOL HELPERS (RE: PacketEncoder.ts)
+// ═══════════════════════════════════════════
+
+function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
+  const out = new Uint8Array(2 + nonce.length);
+  out[0] = 0x0a; out[1] = nonce.length; out.set(nonce, 2);
+  return out;
+}
+
+function buildPkt(cat: number, op: number, payload: Uint8Array): Uint8Array {
+  const type = (cat === CATEGORIES.SYSTEM && op >= 17) ? 100 : 101;
+  const out = new Uint8Array(3 + payload.length);
+  out[0] = type; out[1] = cat; out[2] = op; out.set(payload, 3);
+  return out;
+}
+
+// ═══════════════════════════════════════════
+// UI REFS
+// ═══════════════════════════════════════════
+
+const $ = (id: string) => document.getElementById(id)!;
 const btnConnect      = $('btn-connect') as HTMLButtonElement;
 const btnHrStart      = $('btn-hr-start') as HTMLButtonElement;
 const btnHrStop       = $('btn-hr-stop') as HTMLButtonElement;
@@ -14,537 +198,275 @@ const valBattery      = $('val-battery');
 const valCharging     = $('val-charging');
 const valHr           = $('val-hr');
 const hrChart         = $('hr-chart');
-
 const panelBattery    = $('panel-battery');
 const panelHr         = $('panel-hr');
 
-// ── Internal BLE state ──
+// ═══════════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════════
+
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
 let hrHistory: number[] = [];
+let _sessionAesKey: Uint8Array | null = null;
+let _sessionCounter: Uint8Array | null = null;
 
-// ── Timeout wrapper — tüm async GATT çağrılarında takılmayı önle ──
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(`⏱ TIMEOUT [${label}] ${ms}ms`)), ms),
-    ),
-  ]);
-}
+// ═══════════════════════════════════════════
+// HELPERS
+// ═══════════════════════════════════════════
 
-// ── UUID normalize — her formatı normalize edip karşılaştır ──
-function uuidExpand(shortUuid: string): string {
-  const h = shortUuid.replace(/^0x/i, '').toLowerCase();
-  if (h.length === 4) return `0000${h}-0000-1000-8000-00805f9b34fb`;
-  if (h.length === 8) return `${h}-0000-1000-8000-00805f9b34fb`;
-  return h; // zaten full UUID
-}
-
-/** Iki UUID'i (short/full/kvv) karşılaştır. */
-function uuidMatch(a: string, b: string): boolean {
-  const an = a.replace(/-/g, '').toLowerCase();
-  const bn = b.replace(/-/g, '').toLowerCase();
-  return an === bn || an.endsWith(bn) || bn.endsWith(an);
-}
-
-// ── Helpers ──
 function setStatus(text: string, ok?: boolean) {
   statusText.textContent = text;
   statusDot.className = 'dot' + (ok === true ? ' connected' : ok === false ? ' error' : '');
 }
-
 function setButtons(connected: boolean) {
-  btnConnect.disabled = connected;
-  btnDisconnect.disabled = !connected;
-  btnHrStart.disabled = true;
-  btnHrStop.disabled = true;
+  btnConnect.disabled = connected; btnDisconnect.disabled = !connected;
+  btnHrStart.disabled = true; btnHrStop.disabled = true;
 }
-
 function renderChart() {
-  const max = Math.max(...hrHistory, 80);
-  hrChart.innerHTML = hrHistory
-    .map((v, i) =>
-      `<div class="bar${i === hrHistory.length - 1 ? ' latest' : ''}" style="height:${(v / max) * 100}%"></div>`,
-    )
-    .join('');
+  const mx = Math.max(...hrHistory, 80);
+  hrChart.innerHTML = hrHistory.map((v, i) =>
+    `<div class="bar${i === hrHistory.length - 1 ? ' latest' : ''}" style="height:${(v / mx) * 100}%"></div>`
+  ).join('');
 }
-
 function addHrSample(bpm: number) {
-  hrHistory.push(bpm);
-  if (hrHistory.length > 80) hrHistory.shift();
-  renderChart();
-  valHr.textContent = `${bpm}`;
+  hrHistory.push(bpm); if (hrHistory.length > 80) hrHistory.shift();
+  renderChart(); valHr.textContent = `${bpm}`;
 }
 
-// ── BLE notification helpers ──
+async function writeBLE(data: Uint8Array) {
+  if (!writeChar) throw new Error('writeChar not ready');
+  log('sent', `→ ${hex(data)}`);
+  if (writeChar.properties.writeWithoutResponse) {
+    // @ts-ignore
+    await writeChar.writeValueWithoutResponse(data);
+  } else {
+    await writeChar.writeValue(data as any);
+  }
+}
 
-/** Wait for a single BLE notification with timeout. Returns the raw bytes. */
 function waitOneNotification(timeout = 10000): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     if (!notifyChar) return reject(new Error('notifyChar not ready'));
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error(`Notification timeout (${timeout}ms)`));
-    }, timeout);
-    const handler = (event: Event) => {
-      const target = event.target as BluetoothRemoteGATTCharacteristic;
-      cleanup();
-      resolve(new Uint8Array(target.value!.buffer));
-    };
-    const cleanup = () => {
-      clearTimeout(timer);
-      notifyChar!.removeEventListener('characteristicvaluechanged', handler);
-    };
-    notifyChar.addEventListener('characteristicvaluechanged', handler);
+    const t = setTimeout(() => { c(); reject(new Error(`Timeout ${timeout}ms`)); }, timeout);
+    const h = (e: Event) => { c(); resolve(new Uint8Array((e.target as BluetoothRemoteGATTCharacteristic).value!.buffer)); };
+    const c = () => { clearTimeout(t); notifyChar!.removeEventListener('characteristicvaluechanged', h); };
+    notifyChar.addEventListener('characteristicvaluechanged', h);
   });
 }
 
-/** Attach a persistent listener that feeds HR samples into the UI. */
 function startHrListener() {
   if (!notifyChar) return;
-  const handler = (event: Event) => {
-    const target = event.target as BluetoothRemoteGATTCharacteristic;
-    const raw = new Uint8Array(target.value!.buffer);
-    log('recv', `HR notify: ${hex(raw)}`);
-
-    if (raw.length >= 7) {
-      const ts     = raw[3] | (raw[4] << 8) | (raw[5] << 16) | (raw[6] << 30);
-      const bpm    = raw.length > 7 ? raw[7] : 0;
-      const conf   = raw.length > 8 ? raw[8] : 0;
-      log('info', `❤ ${bpm} bpm  (ts=${ts} conf=${conf})`);
-      addHrSample(bpm);
+  const h = (e: Event) => {
+    const r = new Uint8Array((e.target as BluetoothRemoteGATTCharacteristic).value!.buffer);
+    log('recv', `HR: ${hex(r)}`);
+    if (r.length >= 7) {
+      addHrSample(r.length > 7 ? r[7] : 0);
     }
   };
-  (notifyChar as any)._hrHandler = handler;
-  notifyChar.addEventListener('characteristicvaluechanged', handler);
+  (notifyChar as any)._hr = h;
+  notifyChar.addEventListener('characteristicvaluechanged', h);
 }
-
 function stopHrListener() {
   if (!notifyChar) return;
-  const handler = (notifyChar as any)._hrHandler;
-  if (handler) {
-    notifyChar.removeEventListener('characteristicvaluechanged', handler);
-    delete (notifyChar as any)._hrHandler;
+  const h = (notifyChar as any)._hr;
+  if (h) { notifyChar.removeEventListener('characteristicvaluechanged', h); delete (notifyChar as any)._hr; }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error(`⏱ ${label} ${ms}ms`)), ms))]);
+}
+
+function uuidExpand(s: string): string {
+  const h = s.replace(/^0x/i, '').toLowerCase();
+  if (h.length === 4) return `0000${h}-0000-1000-8000-00805f9b34fb`;
+  if (h.length === 8) return `${h}-0000-1000-8000-00805f9b34fb`;
+  return h;
+}
+function uuidMatch(a: string, b: string): boolean {
+  return a.replace(/-/g,'').toLowerCase().includes(b.replace(/-/g,'').toLowerCase())
+      || b.replace(/-/g,'').toLowerCase().includes(a.replace(/-/g,'').toLowerCase());
+}
+
+// ═══════════════════════════════════════════
+// CONNECT FLOW
+// ═══════════════════════════════════════════
+
+async function startConnect() {
+  let device: BluetoothDevice | null = null;
+  try {
+    setStatus('Pairing…'); btnConnect.disabled = true;
+    log('info', '═══ CONNECT ═══');
+
+    const SVC_UUIDS = [uuidExpand('fe95'), uuidExpand('fee0'), uuidExpand('fee1'),
+      uuidExpand('fee7'), uuidExpand('fef5'), uuidExpand('fef6'),
+      '0000180a-0000-1000-8000-00805f9b34fb', '0000180f-0000-1000-8000-00805f9b34fb'];
+
+    device = await withTimeout(navigator.bluetooth.requestDevice({
+      acceptAllDevices: true, optionalServices: SVC_UUIDS,
+    }), 30000, 'requestDevice');
+    log('info', `Device: ${device.name ?? '?'}  [${device.id}]`);
+
+    if (!device.gatt) throw new Error('gatt null');
+    gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
+    log('info', 'GATT connected');
+
+    let allSvcs: BluetoothRemoteGATTService[] = [];
+    try { allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'services'); }
+    catch { for (const u of SVC_UUIDS) try { allSvcs.push(await withTimeout(gattServer.getPrimaryService(u), 3000, u)); } catch {} }
+    log('info', `${allSvcs.length} services`);
+
+    const charMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
+    for (const s of allSvcs) {
+      try {
+        const cs = await withTimeout(s.getCharacteristics(), 5000, s.uuid);
+        charMap.set(s.uuid, cs);
+      } catch { continue; }
+    }
+
+    const findSvc = (u: string) => { for (const [su] of charMap) if (uuidMatch(su, u)) return su; return null; };
+    const findChar = (su: string, s: string) => { const cs = charMap.get(su); if (!cs) return null; return cs.find(c => uuidMatch(c.uuid, s)) ?? null; };
+    const firstWW = (su: string) => charMap.get(su)?.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null;
+    const firstN = (su: string) => charMap.get(su)?.find(c => c.properties.notify || c.properties.indicate) ?? null;
+
+    let wc: BluetoothRemoteGATTCharacteristic | null = null, nc: BluetoothRemoteGATTCharacteristic | null = null;
+    const fe95 = findSvc('fe95');
+    if (fe95) { wc = findChar(fe95, '005e') ?? firstWW(fe95); nc = findChar(fe95, '005f') ?? findChar(fe95, '005e') ?? firstN(fe95); }
+    if (!wc || !nc) { const f = findSvc('fee0'); if (f) { wc = findChar(f, 'fee1'); nc = findChar(f, 'fee2'); } }
+    if (!wc || !nc) { for (const [su] of charMap) { wc = firstWW(su); nc = firstN(su); if (wc && nc) break; } }
+    if (!wc || !nc) throw new Error('Chars not found');
+    writeChar = wc; notifyChar = nc;
+    log('info', `W:${wc.uuid}  N:${nc.uuid}`);
+
+    await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
+    log('info', 'Notifications started');
+
+    // ═══ AUTH ═══
+    log('info', '═══ AUTH ═══');
+    const ltkStr = localStorage.getItem('be_ltk')!;
+    const ltk = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+    log('info', `LTK loaded`);
+
+    const pNonce = new Uint8Array(16);
+    crypto.getRandomValues(pNonce);
+    log('info', `PNonce: ${hex(pNonce)}`);
+
+    const initPkt = buildPkt(CATEGORIES.SYSTEM, OPCODES.AUTH_INIT, encodeHandshakeInit(pNonce));
+    await writeBLE(initPkt);
+    log('info', `AUTH_INIT sent (${initPkt.length}B)`);
+
+    const raw = await withTimeout(waitOneNotification(15000), 15000, 'auth resp');
+    log('recv', `AUTH_RESP: ${hex(raw)} (${raw.length}B)`);
+    if (raw.length < 19) throw new Error(`Too short: ${raw.length}B`);
+    const bNonce = raw.subarray(3, 19);
+    const sig = raw.subarray(19);
+
+    const derived = await hkdfDerive(ltk, (() => { const s = new Uint8Array(32); s.set(pNonce); s.set(bNonce,16); return s; })(), new TextEncoder().encode('miwear-auth'));
+    const aKey = derived.subarray(16, 32); const ctr = derived.subarray(32, 48);
+    _sessionAesKey = aKey; _sessionCounter = ctr;
+
+    // Verify & confirm
+    const vd = new Uint8Array(32); vd.set(pNonce); vd.set(bNonce, 16);
+    const esig = (await hmacSha256(derived.subarray(0, 16), vd)).subarray(0, 16);
+    log('info', `Sig match: ${hex(esig)} vs ${hex(sig)}`);
+
+    const confPkt = buildPkt(CATEGORIES.SYSTEM, OPCODES.AUTH_CONFIRM, esig);
+    await writeBLE(confPkt);
+    log('info', 'AUTH_CONFIRM sent');
+
+    setStatus('Authenticated ✓', true);
+    log('info', '═══ AUTH OK ═══');
+
+    // Battery
+    try {
+      const e = await aesCtrEncrypt(new Uint8Array(), aKey, ctr);
+      await writeBLE(buildPkt(CATEGORIES.DEVICE, OPCODES.BATTERY_INFO, e));
+      const br = await withTimeout(waitOneNotification(5000), 5000, 'bat');
+      if (br.length >= 4) {
+        valBattery.textContent = `${br[3]}`;
+        valCharging.textContent = br.length > 4 && br[4] === 1 ? 'Charging' : 'Not charging';
+        panelBattery.style.display = 'block';
+      }
+    } catch {}
+
+    btnHrStart.disabled = false;
+    setStatus('Ready ✓', true);
+    log('info', '═══ READY ═══');
+  } catch (e: any) {
+    log('error', `HATA: ${e.message}`);
+    setStatus(`Error: ${(e as DOMException).code || e.name || e.message}`, false);
+    btnConnect.disabled = false;
   }
 }
 
-// ── Connect & Authenticate ──
-btnConnect.addEventListener('click', async () => {
-  let device: BluetoothDevice | null = null;
+// ═══════════════════════════════════════════
+// WIZARD SETUP
+// ═══════════════════════════════════════════
 
-  try {
-    setStatus('Pairing…');
-    btnConnect.disabled = true;
-    log('info', '═════════ [STEP 1] REQUEST DEVICE ═════════');
+function initWizard() {
+  const dropzone = document.getElementById('dropzone')!;
+  const fileInput = document.getElementById('file-input') as HTMLInputElement;
 
-    // Bilinen Mi Band service UUID'leri (optionalServices'te kayıtlı olmalı)
-    const BAND_SERVICE_UUIDS = [
-      uuidExpand('fee0'), // Legacy Mi Band service
-      uuidExpand('fee1'), // Auth (bazen ayrı service)
-      uuidExpand('fe95'), // Mi Band 6+ yeni service
-      uuidExpand('fee7'), // Diğer Xiaomi
-      uuidExpand('fef5'),
-      uuidExpand('fef6'),
-      '0000180a-0000-1000-8000-00805f9b34fb', // DIS
-      '0000180f-0000-1000-8000-00805f9b34fb', // Battery
-      '00001800-0000-1000-8000-00805f9b34fb', // GAP
-      '00001801-0000-1000-8000-00805f9b34fb', // GATT
-    ];
+  dropzone.onclick = () => fileInput.click();
 
-    log('info', `OptionalServices (${BAND_SERVICE_UUIDS.length} adet):`);
-    BAND_SERVICE_UUIDS.forEach(u => log('info', `  ${u}`));
+  dropzone.ondragover = (e) => { e.preventDefault(); dropzone.classList.add('dragover'); };
+  dropzone.ondragleave = () => dropzone.classList.remove('dragover');
+  dropzone.ondrop = (e) => { e.preventDefault(); dropzone.classList.remove('dragover');
+    if (e.dataTransfer?.files[0]) handleFile(e.dataTransfer.files[0]); };
 
-    try {
-      device = await withTimeout(
-        navigator.bluetooth.requestDevice({
-          acceptAllDevices: true,
-          optionalServices: BAND_SERVICE_UUIDS,
-        }),
-        30000,
-        'requestDevice',
-      );
-      log('info', `[STEP 1] acceptAllDevices OK`);
-    } catch (errA: any) {
-      log('warn', `[STEP 1] acceptAllDevices HATA: ${errA.message}`);
-      log('info', `[STEP 1] namePrefix filter'larına düşülüyor…`);
+  fileInput.onchange = () => { if (fileInput.files?.[0]) handleFile(fileInput.files[0]); };
+}
 
-      interface MyFilter { services?: string[]; namePrefix?: string; }
-      const filters: MyFilter[] = [
-        { services: [uuidExpand('fee0')] },
-        { namePrefix: 'Xiaomi Smart Band' },
-        { namePrefix: 'Mi Smart Band' },
-        { namePrefix: 'Xiaomi' },
-        { namePrefix: 'Mi Band' },
-        { namePrefix: 'Smart Band' },
-        { namePrefix: 'Band' },
-        { namePrefix: 'Mi' },
-      ];
+// ═══════════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════════
 
-      device = await withTimeout(
-        navigator.bluetooth.requestDevice({ filters, optionalServices: BAND_SERVICE_UUIDS }),
-        30000,
-        'requestDevice-filters',
-      );
-      log('info', `[STEP 1] namePrefix filter OK`);
-    }
+if (localStorage.getItem('be_ltk')) {
+  showMainUI();
+} else {
+  showWizard();
+  initWizard();
+}
 
-    log('info', `══════════ [STEP 2] CIHAZ BILGILERI ══════════`);
-    log('info', `  İsim     : "${device.name ?? '(isimsiz)'}"`);
-    log('info', `  ID       : ${device.id}`);
-    log('info', `  GATT     : ${device.gatt?.connected ?? false}`);
-    log('info', `  GATT obj : ${device.gatt ? 'mevcut' : 'NULL!'}`);
-    // @ts-ignore
-    if ((device as any).uuids?.length) {
-      log('info', `  Cihaz UUIDs: ${(device as any).uuids.join(', ')}`);
-    } else {
-      log('info', `  Cihaz UUIDs: yok`);
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 3 — GATT CONNECT (timeout 15sn)
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 3] GATT CONNECT ═════`);
-    if (!device.gatt) throw new Error('[STEP 3] device.gatt NULL');
-
-    try {
-      gattServer = await withTimeout(device.gatt.connect(), 15000, 'gatt.connect');
-      log('info', `[STEP 3] GATT connected=${gattServer.connected}`);
-    } catch (errG: any) {
-      log('error', `[STEP 3] gatt.connect HATA: ${errG.message}`);
-      log('error', `  stack: ${(errG as Error).stack ?? ''}`);
-      throw errG;
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 4 — GET ALL PRIMARY SERVICES (timeout 10sn)
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 4] PRIMARY SERVICELER ═════`);
-    let allServices: BluetoothRemoteGATTService[] = [];
-    try {
-      allServices = await withTimeout(gattServer.getPrimaryServices(), 10000, 'getPrimaryServices');
-      log('info', `[STEP 4] ${allServices.length} service bulundu`);
-    } catch (errS: any) {
-      log('error', `[STEP 4] getPrimaryServices HATA: ${errS.message}`);
-      log('info', `[STEP 4] Tek tek getPrimaryService deneniyor…`);
-      // Bazı ortamlarda getPrimaryServices() desteklenmez — fallback
-      for (const uuid of BAND_SERVICE_UUIDS) {
-        try {
-          const svc = await withTimeout(gattServer.getPrimaryService(uuid), 3000, `getService(${uuid})`);
-          allServices.push(svc);
-          log('info', `  + ${uuid}`);
-        } catch { /* yok */ }
-      }
-      log('info', `[STEP 4] Fallback ile ${allServices.length} service bulundu`);
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 4a — CHARACTERISTIC ENUMERATION
-    // Characteristic referanslarını da sakla — tekrar getCharacteristic() çağrma!
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 4a] CHARACTERISTIC ENUMERATION ═════`);
-
-    // Service UUID → karakteristik objeleri
-    const charObjMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
-    // Service UUID → {uuid, props} metadata
-    const charMetaMap = new Map<string, { uuid: string; props: string[] }[]>();
-
-    for (const s of allServices) {
-      let chars: BluetoothRemoteGATTCharacteristic[] = [];
-      try {
-        chars = await withTimeout(s.getCharacteristics(), 5000, `chars(${s.uuid})`);
-      } catch (e: any) {
-        log('warn', `  ${s.uuid} → getCharacteristics HATA: ${e.message}`);
-        continue;
-      }
-      log('info', `  ${s.uuid} → ${chars.length} char(s):`);
-      charObjMap.set(s.uuid, chars);
-      const meta: { uuid: string; props: string[] }[] = [];
-      for (const c of chars) {
-        const p: string[] = [];
-        if (c.properties.read) p.push('R');
-        if (c.properties.write) p.push('W');
-        if (c.properties.writeWithoutResponse) p.push('WW');
-        if (c.properties.notify) p.push('N');
-        if (c.properties.indicate) p.push('I');
-        meta.push({ uuid: c.uuid, props: p });
-        log('info', `    ${c.uuid}  [${p.join('+')}]`);
-      }
-      charMetaMap.set(s.uuid, meta);
-    }
-
-    // ─── helper: enumerated karakteristik objesini bul ───
-    function findCharObj(svcUuid: string, shortUuid: string): BluetoothRemoteGATTCharacteristic | null {
-      const chars = charObjMap.get(svcUuid);
-      if (!chars) return null;
-      for (const c of chars) {
-        if (uuidMatch(c.uuid, shortUuid)) return c;
-      }
-      return null;
-    }
-    function findFirstCharObj(svcUuid: string, propFilter: (p: string[]) => boolean): BluetoothRemoteGATTCharacteristic | null {
-      const chars = charObjMap.get(svcUuid);
-      if (!chars) return null;
-      for (const c of chars) {
-        const p: string[] = [];
-        if (c.properties.read) p.push('R');
-        if (c.properties.write) p.push('W');
-        if (c.properties.writeWithoutResponse) p.push('WW');
-        if (c.properties.notify) p.push('N');
-        if (c.properties.indicate) p.push('I');
-        if (propFilter(p)) return c;
-      }
-      return null;
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 5 — AUTO-DETECT WRITE/NOTIFY CHARACTERISTICS
-    // Öncelik: FE95 → fee0 → ilk uygun
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 5] CHAR DETECT ═════`);
-
-    function findService(uuid: string): string | null {
-      for (const [svcUuid] of charMetaMap) {
-        if (uuidMatch(svcUuid, uuid)) return svcUuid;
-      }
-      return null;
-    }
-
-    let svcForWrite: BluetoothRemoteGATTService | null = null;
-    let svcForNotify: BluetoothRemoteGATTService | null = null;
-    let writeCharObj: BluetoothRemoteGATTCharacteristic | null = null;
-    let notifyCharObj: BluetoothRemoteGATTCharacteristic | null = null;
-
-    // ADAY 1: FE95
-    const fe95 = findService('fe95');
-    if (fe95) {
-      log('info', `[STEP 5] FE95 servisi bulundu`);
-      const w = findFirstCharObj(fe95, p => p.includes('WW') || p.includes('W'));
-      const n = findFirstCharObj(fe95, p => p.includes('N') || p.includes('I'));
-      if (w && n) {
-        svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
-        writeCharObj = w;
-        notifyCharObj = n;
-        log('info', `[STEP 5] FE95: write=${w.uuid} notify=${n.uuid}`);
-      }
-    }
-
-    // ADAY 2: fee0 (legacy)
-    if (!writeCharObj || !notifyCharObj) {
-      const fee0 = findService('fee0');
-      if (fee0) {
-        log('info', `[STEP 5] fee0 servisi bulundu`);
-        const w = findCharObj(fee0, 'fee1');
-        const n = findCharObj(fee0, 'fee2');
-        if (w && n) {
-          svcForWrite = svcForNotify = allServices.find(s => s.uuid === fee0)!;
-          writeCharObj = w;
-          notifyCharObj = n;
-          log('info', `[STEP 5] fee0: write=${w.uuid} notify=${n.uuid}`);
-        }
-      }
-    }
-
-    // ADAY 3: enumerated'da ilk uygun pair
-    if (!writeCharObj || !notifyCharObj) {
-      log('info', `[STEP 5] ilk uygun char pair taranıyor…`);
-      for (const [svcUuid, chars] of charObjMap) {
-        const svc = allServices.find(s => s.uuid === svcUuid)!;
-        const w = chars.find(c => c.properties.writeWithoutResponse || c.properties.write);
-        const n = chars.find(c => c.properties.notify || c.properties.indicate);
-        if (w && n) {
-          svcForWrite = svcForNotify = svc;
-          writeCharObj = w;
-          notifyCharObj = n;
-          log('info', `[STEP 5] ilk uygun: svc=${svcUuid} write=${w.uuid} notify=${n.uuid}`);
-          break;
-        }
-      }
-    }
-
-    if (!writeCharObj || !notifyCharObj) {
-      throw new Error(`[STEP 5] write/notify pair bulunamadı!`);
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 6 — USE ENUMERATED CHAR REFERENCES
-    // NOT: getCharacteristic() çağrılmaz — enumerated referanslar kullanılır
-    // Web Bluetooth bazı ortamlarda aynı char'a iki kez getCharacteristic()
-    // yapınca timeout atar.
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 6] CHAR REFERENCES ═════`);
-    log('info', `  Service   : ${svcForWrite!.uuid}`);
-    log('info', `  Write char: ${writeCharObj!.uuid}`);
-    log('info', `  Notify char: ${notifyCharObj!.uuid}`);
-
-    writeChar = writeCharObj;
-    notifyChar = notifyCharObj;
-
-    log('info', `[STEP 6] writeChar alındı (enumerated)`);
-    log('info', `  write: ${writeChar.properties.write}, writeWithoutResp: ${writeChar.properties.writeWithoutResponse}`);
-    log('info', `[STEP 6] notifyChar alındı (enumerated)`);
-    log('info', `  notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
-
-    // ──────────────────────────────────────────
-    // STEP 7 — START NOTIFICATIONS (timeout 5sn)
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 7] START NOTIFICATIONS ═════`);
-    try {
-      await withTimeout(notifyChar.startNotifications(), 5000, 'startNotifications');
-      log('info', `[STEP 7] startNotifications() BAŞARILI`);
-    } catch (errN: any) {
-      log('error', `[STEP 7] startNotifications HATA: ${errN.message}`);
-      log('error', `  stack: ${(errN as Error).stack ?? ''}`);
-      throw errN;
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 8 — AUTH HANDSHAKE
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 8] AUTH HANDSHAKE ═════`);
-
-    const longTermKey = new Uint8Array(16);
-    crypto.getRandomValues(longTermKey);
-    log('info', `LongTermKey (demo, random): ${hex(longTermKey)}`);
-
-    // 8a: AUTH_INIT (opcode 26)
-    const phoneNonce = new Uint8Array(16);
-    crypto.getRandomValues(phoneNonce);
-    log('info', `Phone nonce: ${hex(phoneNonce)}`);
-
-    const initFrame = new Uint8Array(25);
-    initFrame[0] = 100;    // type=PLAINTEXT
-    initFrame[1] = 1;      // category=SYSTEM
-    initFrame[2] = 26;     // opcode=AUTH_INIT
-    initFrame[3] = 0x0a;   // tag field 1 bytes
-    initFrame[4] = 16;     // length
-    initFrame.set(phoneNonce, 5);
-    log('sent', `AUTH_INIT → ${hex(initFrame)}`);
-
-    try {
-      await withTimeout(writeChar.writeValue(initFrame), 5000, 'write AUTH_INIT');
-      log('info', `[STEP 8a] AUTH_INIT gönderildi (${initFrame.length}B)`);
-    } catch (errW: any) {
-      log('error', `[STEP 8a] writeValue(AUTH_INIT) HATA: ${errW.message}`);
-      log('error', `  stack: ${(errW as Error).stack ?? ''}`);
-      throw errW;
-    }
-
-    // 8b: AUTH_RESPONSE bekle (opcode 27)
-    log('info', `[STEP 8b] AUTH_RESPONSE bekleniyor (timeout 10sn)…`);
-    let authResp: Uint8Array;
-    try {
-      authResp = await withTimeout(waitOneNotification(12000), 12000, 'auth notification');
-      log('recv', `AUTH_RESPONSE ← ${hex(authResp)}`);
-    } catch (errT: any) {
-      log('error', `[STEP 8b] AUTH_RESPONSE alınamadı: ${errT.message}`);
-      log('warn', `[STEP 8b] Auth atlanıyor, bağlantı hala açık mı kontrol…`);
-      throw errT;
-    }
-
-    if (authResp.length < 3) {
-      throw new Error(`Auth response too short: ${authResp.length}B`);
-    }
-    const [rType, rCat, rOp] = authResp;
-    log('info', `  Response: type=${rType} cat=${rCat} opcode=${rOp} payload=${authResp.length - 3}B`);
-
-    setStatus('Authenticated ✓', true);
-    log('info', '══════════ AUTH COMPLETE ══════════');
-
-    // ──────────────────────────────────────────
-    // STEP 9 — BATTERY (opcode 12)
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 9] BATTERY ═════`);
-    const batReq = new Uint8Array(3);
-    batReq[0] = 100; batReq[1] = 5; batReq[2] = 12;
-    log('sent', `BATTERY_REQ → ${hex(batReq)}`);
-
-    try {
-      await withTimeout(writeChar.writeValue(batReq), 5000, 'battery write');
-      const batResp = await withTimeout(waitOneNotification(5000), 5000, 'battery notify');
-      log('recv', `BATTERY_RESP ← ${hex(batResp)}`);
-      if (batResp.length >= 4) {
-        valBattery.textContent = `${batResp[3]}`;
-        valCharging.textContent = batResp.length > 4 && batResp[4] === 1 ? 'Charging' : 'Not charging';
-        panelBattery.style.display = 'block';
-        log('info', `Battery: ${batResp[3]}%`);
-      }
-    } catch {
-      log('warn', 'Battery sorgusu başarısız (pas geçildi)');
-    }
-
-    // ── Ready ──
-    btnHrStart.disabled = false;
-    setStatus('Ready ✓', true);
-    log('info', '══════════ DEVICE READY ══════════');
-
-  } catch (err: any) {
-    const errCode = (err as DOMException).code;
-    const errName = (err as DOMException).name;
-    log('error', `══════════ HATA ══════════`);
-    log('error', `  message  : ${err.message ?? err}`);
-    log('error', `  code     : ${errCode ?? 'N/A'}`);
-    log('error', `  name     : ${errName ?? 'N/A'}`);
-    log('error', `  stack    :`);
-    const stackLines = ((err as Error).stack ?? '(stack yok)').split('\n');
-    stackLines.forEach(line => log('error', `    ${line.trim()}`));
-    log('error', `══════════════════════════`);
-
-    setStatus(`Error: ${errCode || errName || err.message}`, false);
-    btnConnect.disabled = false;
+// Settings — anahtar sıfırlama
+document.getElementById('btn-settings')!.onclick = () => {
+  if (confirm('Güvenlik anahtarını sıfırlamak istediğinize emin misiniz?')) {
+    localStorage.removeItem('be_ltk');
+    location.reload();
   }
-});
+};
 
-// ── Heart Rate Start ──
-btnHrStart.addEventListener('click', async () => {
+// ── Button bindings ──
+btnConnect.onclick = startConnect;
+
+btnHrStart.onclick = async () => {
   try {
-    if (!writeChar) throw new Error('Not connected');
-    btnHrStart.disabled = true;
-    btnHrStop.disabled = false;
-    panelHr.style.display = 'block';
-    hrHistory = [];
-    renderChart();
-
-    const pkt = new Uint8Array(3);
-    pkt[0] = 101; pkt[1] = 2; pkt[2] = 69;
-    log('sent', `HR_SUBSCRIBE → ${hex(pkt)}`);
-    await writeChar.writeValue(pkt);
+    if (!writeChar || !_sessionAesKey || !_sessionCounter) throw new Error('Not authed');
+    btnHrStart.disabled = true; btnHrStop.disabled = false;
+    panelHr.style.display = 'block'; hrHistory = []; renderChart();
+    const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
+    await writeBLE(buildPkt(CATEGORIES.HEALTH, OPCODES.HEART_RATE_SUBSCRIBE, e));
     startHrListener();
-    log('info', 'Heart rate listener active');
-  } catch (err: any) {
-    log('error', `HR start failed: ${err.message}`);
-  }
-});
+  } catch (e: any) { log('error', `HR: ${e.message}`); }
+};
 
-// ── Heart Rate Stop ──
-btnHrStop.addEventListener('click', async () => {
+btnHrStop.onclick = async () => {
   try {
-    if (!writeChar) throw new Error('Not connected');
-    btnHrStart.disabled = false;
-    btnHrStop.disabled = true;
+    if (!writeChar || !_sessionAesKey || !_sessionCounter) throw new Error('Not authed');
+    btnHrStart.disabled = false; btnHrStop.disabled = true;
     stopHrListener();
-    const pkt = new Uint8Array(3);
-    pkt[0] = 101; pkt[1] = 2; pkt[2] = 70;
-    log('sent', `HR_UNSUBSCRIBE → ${hex(pkt)}`);
-    await writeChar.writeValue(pkt);
-    log('info', 'Heart rate stopped');
-  } catch (err: any) {
-    log('error', `HR stop failed: ${err.message}`);
-  }
-});
+    const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
+    await writeBLE(buildPkt(CATEGORIES.HEALTH, OPCODES.HEART_RATE_UNSUBSCRIBE, e));
+  } catch (e: any) { log('error', `HR: ${e.message}`); }
+};
 
-// ── Disconnect ──
-btnDisconnect.addEventListener('click', () => {
-  stopHrListener();
-  gattServer?.disconnect();
-  gattServer = null;
-  writeChar = null;
-  notifyChar = null;
-  setButtons(false);
-  setStatus('Disconnected');
-  panelBattery.style.display = 'none';
-  panelHr.style.display = 'none';
+btnDisconnect.onclick = () => {
+  stopHrListener(); gattServer?.disconnect();
+  gattServer = null; writeChar = null; notifyChar = null;
+  _sessionAesKey = null; _sessionCounter = null;
+  setButtons(false); setStatus('Disconnected');
+  panelBattery.style.display = 'none'; panelHr.style.display = 'none';
   btnConnect.disabled = false;
-  log('info', 'Disconnected');
-});
+};

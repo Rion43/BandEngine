@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '2.4';
+const VERSION = '2.5';
 
 // ═══════════════════════════════════════════
 // CONSTANTS
@@ -52,9 +52,13 @@ function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
   return out;
 }
 
-function buildPkt(cat: number, op: number, payload: Uint8Array): Uint8Array {
-  const out = new Uint8Array(2 + payload.length);
-  out[0] = cat; out[1] = op; out.set(payload, 2);
+function buildWearPacket(cmd: number, id: number, type: number, whichPayload: number, payload: Uint8Array): Uint8Array {
+  const out = new Uint8Array(4 + payload.length);
+  out[0] = cmd;
+  out[1] = id;
+  out[2] = type;
+  out[3] = whichPayload;
+  out.set(payload, 4);
   return out;
 }
 
@@ -363,15 +367,20 @@ async function startConnect() {
     crypto.getRandomValues(pNonce);
     log('info', `PNonce: ${hex(pNonce)}`);
 
-    const initPkt = buildPkt(CATEGORIES.SYSTEM, OPCODES.AUTH_INIT, encodeHandshakeInit(pNonce));
+    // RE: WearPacket cmd id type which_payload protobuf
+    // cmd=1 (protobuf msg), id=0 (ilk istek), type=0x1a (AUTH_INIT=26)
+    const authPayload = encodeHandshakeInit(pNonce);
+    const initPkt = buildWearPacket(1, 0, OPCODES.AUTH_INIT, 0, authPayload);
     await writeBLE(initPkt);
     log('info', `AUTH_INIT sent (${initPkt.length}B)`);
 
     const raw = await withTimeout(waitOneNotification(15000), 15000, 'auth resp');
     log('recv', `AUTH_RESP: ${hex(raw)} (${raw.length}B)`);
-    if (raw.length < 18) throw new Error(`Too short: ${raw.length}B`);
-    const bNonce = raw.subarray(2, 18);
-    const sig = raw.subarray(18);
+    if (raw.length < 19) throw new Error(`Too short: ${raw.length}B`);
+    // WearPacket response: type(1) id(1) which_payload(1) protobuf(.)
+    // protobuf: HandshakeResponse { bandNonce(bytes=1) signature(bytes=2) }
+    const bNonce = raw.subarray(3, 19);
+    const sig = raw.subarray(19);
 
     const derived = await hkdfDerive(ltk, (() => { const s = new Uint8Array(32); s.set(pNonce); s.set(bNonce,16); return s; })(), new TextEncoder().encode('miwear-auth'));
     const aKey = derived.subarray(16, 32); const ctr = derived.subarray(32, 48);
@@ -381,7 +390,7 @@ async function startConnect() {
     const esig = (await hmacSha256(derived.subarray(0, 16), vd)).subarray(0, 16);
     log('info', `Sig match: ${hex(esig)} vs ${hex(sig)}`);
 
-    const confPkt = buildPkt(CATEGORIES.SYSTEM, OPCODES.AUTH_CONFIRM, esig);
+    const confPkt = buildWearPacket(1, 1, OPCODES.AUTH_CONFIRM, 0, esig);
     await writeBLE(confPkt);
     log('info', 'AUTH_CONFIRM sent');
 
@@ -391,7 +400,7 @@ async function startConnect() {
     // Battery
     try {
       const e = await aesCtrEncrypt(new Uint8Array(), aKey, ctr);
-      await writeBLE(buildPkt(CATEGORIES.DEVICE, OPCODES.BATTERY_INFO, e));
+      await writeBLE(buildWearPacket(1, 2, OPCODES.BATTERY_INFO, 0, e));
       const br = await withTimeout(waitOneNotification(5000), 5000, 'bat');
       if (br.length >= 4) {
         valBattery.textContent = `${br[3]}`;
@@ -430,7 +439,7 @@ btnHrStart.onclick = async () => {
     btnHrStart.disabled = true; btnHrStop.disabled = false;
     panelHr.style.display = 'block'; hrHistory = []; renderChart();
     const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
-    await writeBLE(buildPkt(CATEGORIES.HEALTH, OPCODES.HEART_RATE_SUBSCRIBE, e));
+    await writeBLE(buildWearPacket(1, 3, OPCODES.HEART_RATE_SUBSCRIBE, 0, e));
     startHrListener();
   } catch (e: any) { log('error', `HR: ${e.message}`); }
 };
@@ -441,7 +450,7 @@ btnHrStop.onclick = async () => {
     btnHrStart.disabled = false; btnHrStop.disabled = true;
     stopHrListener();
     const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
-    await writeBLE(buildPkt(CATEGORIES.HEALTH, OPCODES.HEART_RATE_UNSUBSCRIBE, e));
+    await writeBLE(buildWearPacket(1, 4, OPCODES.HEART_RATE_UNSUBSCRIBE, 0, e));
   } catch (e: any) { log('error', `HR: ${e.message}`); }
 };
 

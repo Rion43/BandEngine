@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '2.2';
+const VERSION = '2.3';
 
 // ═══════════════════════════════════════════
 // CONSTANTS
@@ -53,9 +53,8 @@ function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
 }
 
 function buildPkt(cat: number, op: number, payload: Uint8Array): Uint8Array {
-  const type = (cat === CATEGORIES.SYSTEM && op >= 17) ? 100 : 101;
-  const out = new Uint8Array(3 + payload.length);
-  out[0] = type; out[1] = cat; out[2] = op; out.set(payload, 3);
+  const out = new Uint8Array(2 + payload.length);
+  out[0] = cat; out[1] = op; out.set(payload, 2);
   return out;
 }
 
@@ -361,9 +360,9 @@ async function startConnect() {
 
     const raw = await withTimeout(waitOneNotification(15000), 15000, 'auth resp');
     log('recv', `AUTH_RESP: ${hex(raw)} (${raw.length}B)`);
-    if (raw.length < 19) throw new Error(`Too short: ${raw.length}B`);
-    const bNonce = raw.subarray(3, 19);
-    const sig = raw.subarray(19);
+    if (raw.length < 18) throw new Error(`Too short: ${raw.length}B`);
+    const bNonce = raw.subarray(2, 18);
+    const sig = raw.subarray(18);
 
     const derived = await hkdfDerive(ltk, (() => { const s = new Uint8Array(32); s.set(pNonce); s.set(bNonce,16); return s; })(), new TextEncoder().encode('miwear-auth'));
     const aKey = derived.subarray(16, 32); const ctr = derived.subarray(32, 48);

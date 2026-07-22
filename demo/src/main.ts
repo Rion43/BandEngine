@@ -241,12 +241,15 @@ btnConnect.addEventListener('click', async () => {
 
     // ──────────────────────────────────────────
     // STEP 4a — CHARACTERISTIC ENUMERATION
-    // Önce tüm characteristic'leri al (paralel, hata yut)
+    // Characteristic referanslarını da sakla — tekrar getCharacteristic() çağrma!
     // ──────────────────────────────────────────
     log('info', `═════ [STEP 4a] CHARACTERISTIC ENUMERATION ═════`);
 
-    // Service → characteristic[] haritası
-    const charMap = new Map<string, { uuid: string; props: string[] }[]>();
+    // Service UUID → karakteristik objeleri
+    const charObjMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
+    // Service UUID → {uuid, props} metadata
+    const charMetaMap = new Map<string, { uuid: string; props: string[] }[]>();
+
     for (const s of allServices) {
       let chars: BluetoothRemoteGATTCharacteristic[] = [];
       try {
@@ -256,7 +259,8 @@ btnConnect.addEventListener('click', async () => {
         continue;
       }
       log('info', `  ${s.uuid} → ${chars.length} char(s):`);
-      const list: { uuid: string; props: string[] }[] = [];
+      charObjMap.set(s.uuid, chars);
+      const meta: { uuid: string; props: string[] }[] = [];
       for (const c of chars) {
         const p: string[] = [];
         if (c.properties.read) p.push('R');
@@ -264,10 +268,34 @@ btnConnect.addEventListener('click', async () => {
         if (c.properties.writeWithoutResponse) p.push('WW');
         if (c.properties.notify) p.push('N');
         if (c.properties.indicate) p.push('I');
-        list.push({ uuid: c.uuid, props: p });
+        meta.push({ uuid: c.uuid, props: p });
         log('info', `    ${c.uuid}  [${p.join('+')}]`);
       }
-      charMap.set(s.uuid, list);
+      charMetaMap.set(s.uuid, meta);
+    }
+
+    // ─── helper: enumerated karakteristik objesini bul ───
+    function findCharObj(svcUuid: string, shortUuid: string): BluetoothRemoteGATTCharacteristic | null {
+      const chars = charObjMap.get(svcUuid);
+      if (!chars) return null;
+      for (const c of chars) {
+        if (uuidMatch(c.uuid, shortUuid)) return c;
+      }
+      return null;
+    }
+    function findFirstCharObj(svcUuid: string, propFilter: (p: string[]) => boolean): BluetoothRemoteGATTCharacteristic | null {
+      const chars = charObjMap.get(svcUuid);
+      if (!chars) return null;
+      for (const c of chars) {
+        const p: string[] = [];
+        if (c.properties.read) p.push('R');
+        if (c.properties.write) p.push('W');
+        if (c.properties.writeWithoutResponse) p.push('WW');
+        if (c.properties.notify) p.push('N');
+        if (c.properties.indicate) p.push('I');
+        if (propFilter(p)) return c;
+      }
+      return null;
     }
 
     // ──────────────────────────────────────────
@@ -277,125 +305,86 @@ btnConnect.addEventListener('click', async () => {
     log('info', `═════ [STEP 5] CHAR DETECT ═════`);
 
     function findService(uuid: string): string | null {
-      for (const [svcUuid] of charMap) {
+      for (const [svcUuid] of charMetaMap) {
         if (uuidMatch(svcUuid, uuid)) return svcUuid;
-      }
-      return null;
-    }
-
-    function findChar(serviceUuid: string, shortUuid: string): string | null {
-      const chars = charMap.get(serviceUuid);
-      if (!chars) return null;
-      for (const c of chars) {
-        if (uuidMatch(c.uuid, shortUuid)) return c.uuid;
-      }
-      return null;
-    }
-
-    function findFirstChar(serviceUuid: string, propFilter: (p: string[]) => boolean): string | null {
-      const chars = charMap.get(serviceUuid);
-      if (!chars) return null;
-      for (const c of chars) {
-        if (propFilter(c.props)) return c.uuid;
       }
       return null;
     }
 
     let svcForWrite: BluetoothRemoteGATTService | null = null;
     let svcForNotify: BluetoothRemoteGATTService | null = null;
-    let writeUuid = '';
-    let notifyUuid = '';
+    let writeCharObj: BluetoothRemoteGATTCharacteristic | null = null;
+    let notifyCharObj: BluetoothRemoteGATTCharacteristic | null = null;
 
-    // ADAY 1: FE95 service (Mi Band 6+)
-    //   0050 = read-only (band'dan gelen auth challenge)
-    //   005E = writeWithoutResponse + notify (ana veri kanalı)
-    //   005F = writeWithoutResponse + notify (ikincil)
+    // ADAY 1: FE95
     const fe95 = findService('fe95');
     if (fe95) {
       log('info', `[STEP 5] FE95 servisi bulundu`);
-      // Write: WW tercih edilir (005E veya 005F)
-      const w = findFirstChar(fe95, p => p.includes('WW') || p.includes('W'));
-      // Notify: aynı char veya ayrı
-      const n = findFirstChar(fe95, p => p.includes('N') || p.includes('I'));
+      const w = findFirstCharObj(fe95, p => p.includes('WW') || p.includes('W'));
+      const n = findFirstCharObj(fe95, p => p.includes('N') || p.includes('I'));
       if (w && n) {
         svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
-        writeUuid = w;
-        notifyUuid = n;
-        log('info', `[STEP 5] FE95: write=${w} notify=${n}`);
-      } else {
-        log('warn', `[STEP 5] FE95'te uygun char yok (w=${w} n=${n})`);
-        // Fallback: 005E ve 005F zorla dene
-        if (findChar(fe95, '005e') && findChar(fe95, '005f')) {
-          svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
-          writeUuid = findChar(fe95, '005e')!;
-          notifyUuid = findChar(fe95, '005f')!;
-          log('info', `[STEP 5] FE95 fallback: write=${writeUuid} notify=${notifyUuid}`);
-        }
+        writeCharObj = w;
+        notifyCharObj = n;
+        log('info', `[STEP 5] FE95: write=${w.uuid} notify=${n.uuid}`);
       }
     }
 
-    // ADAY 2: fee0 service (legacy) → fee1 write, fee2 notify
-    if (!svcForWrite || !svcForNotify) {
+    // ADAY 2: fee0 (legacy)
+    if (!writeCharObj || !notifyCharObj) {
       const fee0 = findService('fee0');
       if (fee0) {
         log('info', `[STEP 5] fee0 servisi bulundu`);
-        const w = findChar(fee0, 'fee1');
-        const n = findChar(fee0, 'fee2');
+        const w = findCharObj(fee0, 'fee1');
+        const n = findCharObj(fee0, 'fee2');
         if (w && n) {
           svcForWrite = svcForNotify = allServices.find(s => s.uuid === fee0)!;
-          writeUuid = w;
-          notifyUuid = n;
-          log('info', `[STEP 5] fee0 kullanılacak: write=${w} notify=${n}`);
+          writeCharObj = w;
+          notifyCharObj = n;
+          log('info', `[STEP 5] fee0: write=${w.uuid} notify=${n.uuid}`);
         }
       }
     }
 
-    // ADAY 3: İlk W+WW bulunan service + ilk N+I bulunan service
-    if (!svcForWrite || !svcForNotify) {
-      log('info', `[STEP 5] Bilinen servisler yok, ilk uygun char pair taranıyor…`);
-      for (const [svcUuid, chars] of charMap) {
+    // ADAY 3: enumerated'da ilk uygun pair
+    if (!writeCharObj || !notifyCharObj) {
+      log('info', `[STEP 5] ilk uygun char pair taranıyor…`);
+      for (const [svcUuid, chars] of charObjMap) {
         const svc = allServices.find(s => s.uuid === svcUuid)!;
-        const w = chars.find(c => c.props.includes('W') || c.props.includes('WW'));
-        const n = chars.find(c => c.props.includes('N') || c.props.includes('I'));
+        const w = chars.find(c => c.properties.writeWithoutResponse || c.properties.write);
+        const n = chars.find(c => c.properties.notify || c.properties.indicate);
         if (w && n) {
           svcForWrite = svcForNotify = svc;
-          writeUuid = w.uuid;
-          notifyUuid = n.uuid;
-          log('info', `[STEP 5] İlk uygun: svc=${svcUuid} write=${w.uuid} notify=${n.uuid}`);
+          writeCharObj = w;
+          notifyCharObj = n;
+          log('info', `[STEP 5] ilk uygun: svc=${svcUuid} write=${w.uuid} notify=${n.uuid}`);
           break;
         }
       }
     }
 
-    if (!svcForWrite || !writeUuid || !notifyUuid) {
-      throw new Error(`[STEP 5] Hiçbir uygun write/notify characteristic pair bulunamadı!`);
+    if (!writeCharObj || !notifyCharObj) {
+      throw new Error(`[STEP 5] write/notify pair bulunamadı!`);
     }
 
     // ──────────────────────────────────────────
-    // STEP 6 — GET CHARACTERISTIC REFERENCES (timeout 5sn)
+    // STEP 6 — USE ENUMERATED CHAR REFERENCES
+    // NOT: getCharacteristic() çağrılmaz — enumerated referanslar kullanılır
+    // Web Bluetooth bazı ortamlarda aynı char'a iki kez getCharacteristic()
+    // yapınca timeout atar.
     // ──────────────────────────────────────────
-    log('info', `═════ [STEP 6] GET CHAR REFERENCES ═════`);
-    log('info', `  Service   : ${svcForWrite.uuid}`);
-    log('info', `  Write char: ${writeUuid}`);
-    log('info', `  Notify char: ${notifyUuid}`);
+    log('info', `═════ [STEP 6] CHAR REFERENCES ═════`);
+    log('info', `  Service   : ${svcForWrite!.uuid}`);
+    log('info', `  Write char: ${writeCharObj!.uuid}`);
+    log('info', `  Notify char: ${notifyCharObj!.uuid}`);
 
-    try {
-      // Aynı UUID hem write hem notify ise tek çağrı yap
-      if (writeUuid === notifyUuid && svcForWrite === svcForNotify) {
-        const c = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 10000, 'getChar(write+notify)');
-        writeChar = c;
-        notifyChar = c;
-        log('info', `[STEP 6] write+notify aynı char: ${c.uuid}`);
-      } else {
-        writeChar = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 10000, 'getChar(write)');
-        notifyChar = await withTimeout(svcForNotify!.getCharacteristic(notifyUuid), 10000, 'getChar(notify)');
-      }
-      log('info', `  write: ${writeChar.properties.write}, writeWithoutResp: ${writeChar.properties.writeWithoutResponse}`);
-      log('info', `  notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
-    } catch (errC: any) {
-      log('error', `[STEP 6] getCharacteristic HATA: ${errC.message}`);
-      throw errC;
-    }
+    writeChar = writeCharObj;
+    notifyChar = notifyCharObj;
+
+    log('info', `[STEP 6] writeChar alındı (enumerated)`);
+    log('info', `  write: ${writeChar.properties.write}, writeWithoutResp: ${writeChar.properties.writeWithoutResponse}`);
+    log('info', `[STEP 6] notifyChar alındı (enumerated)`);
+    log('info', `  notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
 
     // ──────────────────────────────────────────
     // STEP 7 — START NOTIFICATIONS (timeout 5sn)

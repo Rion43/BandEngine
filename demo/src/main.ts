@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '1.8';
+const VERSION = '1.9';
 
 // ═══════════════════════════════════════════
 // CONSTANTS (RE: Mi Fitness protocol)

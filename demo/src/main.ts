@@ -265,9 +265,18 @@ async function startConnect() {
       uuidExpand('fee7'), uuidExpand('fef5'), uuidExpand('fef6'),
       '0000180a-0000-1000-8000-00805f9b34fb', '0000180f-0000-1000-8000-00805f9b34fb'];
 
-    device = await withTimeout(navigator.bluetooth.requestDevice({
-      acceptAllDevices: true, optionalServices: SVC_UUIDS,
-    }), 30000, 'requestDevice');
+    try {
+      device = await withTimeout(navigator.bluetooth.requestDevice({
+        acceptAllDevices: true, optionalServices: SVC_UUIDS,
+      }), 30000, 'requestDevice');
+    } catch (e: any) {
+      // Origin permission hatası → yeniden dene
+      log('warn', `requestDevice failed: ${e.message}, retrying...`);
+      device = await withTimeout(navigator.bluetooth.requestDevice({
+        filters: [{ namePrefix: 'Xiaomi Smart Band' }, { namePrefix: 'Mi Smart Band' }, { namePrefix: 'Mi' }, { namePrefix: 'Band' }],
+        optionalServices: SVC_UUIDS,
+      }), 30000, 'requestDevice2');
+    }
     log('info', `Device: ${device.name ?? '?'}  [${device.id}]`);
 
     if (!device.gatt) throw new Error('gatt null');

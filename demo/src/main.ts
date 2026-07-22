@@ -292,7 +292,32 @@ async function startConnect() {
 
     let wc: BluetoothRemoteGATTCharacteristic | null = null, nc: BluetoothRemoteGATTCharacteristic | null = null;
     const fe95 = findSvc('fe95');
-    if (fe95) { wc = findChar(fe95, '005e') ?? firstWW(fe95); nc = findChar(fe95, '005f') ?? findChar(fe95, '005e') ?? firstN(fe95); }
+    if (fe95) {
+      log('info', `FE95 char strategy: testing combinations`);
+
+      // Önce 0050'den auth state oku
+      const char50 = findChar(fe95, '0050');
+      if (char50 && char50.properties.read) {
+        try {
+          const v = await withTimeout(char50.readValue(), 3000, 'read0050');
+          log('info', `0050 state: ${hex(new Uint8Array(v.buffer))}`);
+        } catch (e: any) { log('warn', `0050 read fail: ${e.message}`); }
+      }
+
+      // ADAY A: write 005E, notify 005E (ikisi de ayni char)
+      const char5e = findChar(fe95, '005e');
+      // ADAY B: write 005F, notify 005F
+      const char5f = findChar(fe95, '005f');
+
+      // Önce 005E dene
+      if (char5e) {
+        wc = char5e; nc = char5e;
+        log('info', `Trying: write=005E notify=005E`);
+      } else if (char5f) {
+        wc = char5f; nc = char5f;
+        log('info', `Trying: write=005F notify=005F`);
+      }
+    }
     if (!wc || !nc) { const f = findSvc('fee0'); if (f) { wc = findChar(f, 'fee1'); nc = findChar(f, 'fee2'); } }
     if (!wc || !nc) { for (const [su] of charMap) { wc = firstWW(su); nc = firstN(su); if (wc && nc) break; } }
     if (!wc || !nc) throw new Error('Chars not found');
@@ -300,7 +325,15 @@ async function startConnect() {
     log('info', `W:${wc.uuid}  N:${nc.uuid}`);
 
     await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
-    log('info', 'Notifications started');
+    log('info', `Notifications started on ${notifyChar.uuid}`);
+
+    // Ayrıca writeChar da farklıysa onu da dinle
+    if (writeChar !== notifyChar && writeChar.properties.notify) {
+      try {
+        await withTimeout(writeChar.startNotifications(), 3000, 'notif2');
+        log('info', `Also listening on ${writeChar.uuid}`);
+      } catch {}
+    }
 
     // ═══ AUTH ═══
     log('info', '═══ AUTH ═══');

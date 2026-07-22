@@ -85,6 +85,18 @@ button.danger:hover:not(:disabled) { background: #450a0a; }
   margin-bottom: 12px;
 }
 
+/* ── Version badge ── */
+.version-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  letter-spacing: .02em;
+  flex-shrink: 0;
+}
+
 /* ── Status ── */
 #status {
   display: flex;

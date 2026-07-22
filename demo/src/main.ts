@@ -114,14 +114,73 @@ btnConnect.addEventListener('click', async () => {
     btnConnect.disabled = true;
     log('info', 'Requesting Bluetooth device…');
 
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: ['0000fee0-0000-1000-8000-00805f9b34fb'] }],
-      optionalServices: [
-        '0000fee0-0000-1000-8000-00805f9b34fb',
-        '0000fee1-0000-1000-8000-00805f9b34fb',
-      ],
-    });
-    log('info', `Device selected: ${device.name ?? '(unnamed)'} [${device.id}]`);
+    // ── Geniş BLE taraması ──
+    // Önce acceptAllDevices dener, olmazsa namePrefix filterlerine düşer.
+    const filterNames = [
+      'Xiaomi Smart Band',
+      'Mi Smart Band',
+      'Xiaomi',
+      'Mi Band',
+      'Smart Band',
+      'Band',
+      'Mi',
+    ];
+    interface MyFilter { services?: string[]; namePrefix?: string; }
+    const filters: MyFilter[] = [
+      { services: ['0000fee0-0000-1000-8000-00805f9b34fb'] },
+      { namePrefix: 'Xiaomi Smart Band' },
+      { namePrefix: 'Mi Smart Band' },
+      { namePrefix: 'Xiaomi' },
+      { namePrefix: 'Mi Band' },
+      { namePrefix: 'Smart Band' },
+      { namePrefix: 'Band' },
+      { namePrefix: 'Mi' },
+    ];
+    log('info', `BLE taraması başlıyor — filter'lar: ${filterNames.join(' | ')}`);
+    log('info', 'Browser cihaz seçim penceresi açılacak. acceptAllDevices deneniyor…');
+
+    let device: BluetoothDevice;
+    try {
+      // acceptAllDevices → tüm BLE cihazlarını göster
+      device = await navigator.bluetooth.requestDevice({
+        acceptAllDevices: true,
+        optionalServices: [
+          '0000fee0-0000-1000-8000-00805f9b34fb',
+          '0000fee1-0000-1000-8000-00805f9b34fb',
+          '0000180a-0000-1000-8000-00805f9b34fb', // Device Information
+        ],
+      });
+      log('info', 'acceptAllDevices ile cihaz seçildi');
+    } catch (_errA) {
+      log('warn', `acceptAllDevices başarısız (${(_errA as Error).message}), namePrefix filter'larına düşülüyor…`);
+      device = await navigator.bluetooth.requestDevice({
+        filters,
+        optionalServices: [
+          '0000fee0-0000-1000-8000-00805f9b34fb',
+          '0000fee1-0000-1000-8000-00805f9b34fb',
+          '0000180a-0000-1000-8000-00805f9b34fb',
+        ],
+      });
+    }
+
+    // ── Seçilen cihazı logla ──
+    log('info', `══════════ CIHAZ SEÇİLDİ ══════════`);
+    log('info', `  İsim     : "${device.name ?? '(isimsiz)'}"`);
+    log('info', `  ID       : ${device.id}`);
+    log('info', `  GATT     : ${device.gatt?.connected ?? false}`);
+    // @ts-ignore — some browsers expose uuids on the device object
+    const uuids: string[] | undefined = device.uuids;
+    if (uuids?.length) {
+      log('info', `  UUIDs    : ${uuids.join(', ')}`);
+    }
+    // @ts-ignore — watchAdvertisements
+    if (typeof (device as any).watchAdvertisements === 'function') {
+      try {
+        await (device as any).watchAdvertisements();
+        log('info', '  Reklam dinlemesi başlatıldı');
+      } catch {}
+    }
+    log('info', `══════════════════════════════════`);
 
     setStatus('Connecting…');
     gattServer = await device.gatt!.connect();

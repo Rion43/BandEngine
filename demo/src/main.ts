@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '1.9';
+const VERSION = '2.0';
 
 // ═══════════════════════════════════════════
 // CONSTANTS (RE: Mi Fitness protocol)
@@ -282,7 +282,11 @@ async function startConnect() {
 
     const charMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
     for (const s of allSvcs) {
-      try { charMap.set(s.uuid, await withTimeout(s.getCharacteristics(), 5000, s.uuid)); } catch { continue; }
+      try {
+        const cs = await withTimeout(s.getCharacteristics(), 3000, s.uuid);
+        charMap.set(s.uuid, cs);
+        log('info', `  ${s.uuid}: ${cs.length} chars`);
+      } catch { log('warn', `  ${s.uuid}: skip (timeout)`); continue; }
     }
 
     const findSvc = (u: string) => { for (const [su] of charMap) if (uuidMatch(su, u)) return su; return null; };
@@ -324,8 +328,14 @@ async function startConnect() {
     writeChar = wc; notifyChar = nc;
     log('info', `W:${wc.uuid}  N:${nc.uuid}`);
 
-    await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
-    log('info', `Notifications started on ${notifyChar.uuid}`);
+    try {
+      await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
+      log('info', `Notifications started on ${notifyChar.uuid}`);
+    } catch (e: any) {
+      const msg = e?.message ?? String(e);
+      log('error', `startNotifications fail: ${msg}`);
+      throw new Error(`notifications: ${msg}`);
+    }
 
     // Ayrıca writeChar da farklıysa onu da dinle
     if (writeChar !== notifyChar && writeChar.properties.notify) {
@@ -387,8 +397,9 @@ async function startConnect() {
     setStatus('Ready ✓', true);
     log('info', '═══ READY ═══');
   } catch (e: any) {
-    log('error', `HATA: ${e.message}`);
-    setStatus(`Error: ${(e as DOMException).code || e.name || e.message}`, false);
+    const msg = e?.message ?? e?.name ?? (typeof e === 'string' ? e : JSON.stringify(e));
+    log('error', `HATA: ${msg}`);
+    setStatus(`Error: ${(e as DOMException)?.code || msg}`, false);
     btnConnect.disabled = false;
   }
 }

@@ -5,7 +5,7 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '2.1';
+const VERSION = '2.2';
 
 // ═══════════════════════════════════════════
 // CONSTANTS
@@ -202,17 +202,12 @@ function addHrSample(bpm: number) {
 
 async function writeBLE(data: Uint8Array) {
   if (!writeChar) throw new Error('writeChar not ready');
-  // FE95 protokolü: 005E'ye yazarken başa 2-byte uzunluk (LE) eklenir
-  const frame = new Uint8Array(2 + data.length);
-  frame[0] = data.length & 0xff;
-  frame[1] = (data.length >> 8) & 0xff;
-  frame.set(data, 2);
-  log('sent', `→ ${hex(data)} (frame=${hex(frame)})`);
+  log('sent', `→ ${hex(data)}`);
   if (writeChar.properties.writeWithoutResponse) {
     // @ts-ignore
-    await writeChar.writeValueWithoutResponse(frame);
+    await writeChar.writeValueWithoutResponse(data);
   } else {
-    await writeChar.writeValue(frame as any);
+    await writeChar.writeValue(data as any);
   }
 }
 
@@ -314,10 +309,10 @@ async function startConnect() {
         catch { log('info', `0050: unavailable`); }
       }
 
-      // Mi Band 9 FE95: write 005E → notify 005F
+      // Mi Band 9 FE95: write 005F → notify 005E (ters kanal)
       if (char5e && char5f) {
-        wc = char5e; nc = char5f;
-        log('info', `use: W=005E N=005F`);
+        wc = char5f; nc = char5e;
+        log('info', `use: W=005F N=005E`);
       } else if (char5e) {
         wc = char5e; nc = char5e;
         log('info', `use: W=005E N=005E (fallback)`);

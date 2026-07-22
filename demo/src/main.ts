@@ -24,6 +24,22 @@ let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
 let hrHistory: number[] = [];
 
+// ── Timeout wrapper — tüm async GATT çağrılarında takılmayı önle ──
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`⏱ TIMEOUT [${label}] ${ms}ms`)), ms),
+    ),
+  ]);
+}
+
+// ── UUID normalize ──
+function uuidExpand(shortUuid: string): string {
+  const hex = shortUuid.replace(/^0x/i, '').toLowerCase();
+  return `0000${hex}-0000-1000-8000-00805f9b34fb`;
+}
+
 // ── Helpers ──
 function setStatus(text: string, ok?: boolean) {
   statusText.textContent = text;
@@ -84,8 +100,6 @@ function startHrListener() {
     const raw = new Uint8Array(target.value!.buffer);
     log('recv', `HR notify: ${hex(raw)}`);
 
-    // Payload starts at byte 3 (after type/cat/op header)
-    // Opcode 53 / cat 2 → protobuf { timestamp, heartRate, confidence }
     if (raw.length >= 7) {
       const ts     = raw[3] | (raw[4] << 8) | (raw[5] << 16) | (raw[6] << 30);
       const bpm    = raw.length > 7 ? raw[7] : 0;
@@ -116,47 +130,40 @@ btnConnect.addEventListener('click', async () => {
     btnConnect.disabled = true;
     log('info', '═════════ [STEP 1] REQUEST DEVICE ═════════');
 
-    // ── ENUMERATE all known primary services on Xiaomi Band ──
+    // Bilinen Mi Band service UUID'leri (optionalServices'te kayıtlı olmalı)
     const BAND_SERVICE_UUIDS = [
-      // Mi Band primary service
-      '0000fee0-0000-1000-8000-00805f9b34fb',
-      // Authentication service
-      '0000fee1-0000-1000-8000-00805f9b34fb',
-      // Device Information (DIS)
-      '0000180a-0000-1000-8000-00805f9b34fb',
-      // Battery Service
-      '0000180f-0000-1000-8000-00805f9b34fb',
-      // Generic Access
-      '00001800-0000-1000-8000-00805f9b34fb',
-      // Generic Attribute
-      '00001801-0000-1000-8000-00805f9b34fb',
-      // Device ID
-      '0000180a-0000-1000-8000-00805f9b34fb',
-      // Human Interface Device
-      '00001812-0000-1000-8000-00805f9b34fb',
-      // Unknown Xiaomi services
-      '0000fee7-0000-1000-8000-00805f9b34fb',
-      '0000fef5-0000-1000-8000-00805f9b34fb',
-      '0000fef6-0000-1000-8000-00805f9b34fb',
+      uuidExpand('fee0'), // Legacy Mi Band service
+      uuidExpand('fee1'), // Auth (bazen ayrı service)
+      uuidExpand('fe95'), // Mi Band 6+ yeni service
+      uuidExpand('fee7'), // Diğer Xiaomi
+      uuidExpand('fef5'),
+      uuidExpand('fef6'),
+      '0000180a-0000-1000-8000-00805f9b34fb', // DIS
+      '0000180f-0000-1000-8000-00805f9b34fb', // Battery
+      '00001800-0000-1000-8000-00805f9b34fb', // GAP
+      '00001801-0000-1000-8000-00805f9b34fb', // GATT
     ];
 
-    log('info', `BLE taraması başlıyor — acceptAllDevices ile tüm cihazlar listelenecek`);
-    log('info', `OptionalServices (${BAND_SERVICE_UUIDS.length} adet) kayıtlı:`);
+    log('info', `OptionalServices (${BAND_SERVICE_UUIDS.length} adet):`);
     BAND_SERVICE_UUIDS.forEach(u => log('info', `  ${u}`));
 
     try {
-      device = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: BAND_SERVICE_UUIDS,
-      });
-      log('info', `[STEP 1a] acceptAllDevices OK — cihaz seçildi`);
+      device = await withTimeout(
+        navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: BAND_SERVICE_UUIDS,
+        }),
+        30000,
+        'requestDevice',
+      );
+      log('info', `[STEP 1] acceptAllDevices OK`);
     } catch (errA: any) {
-      log('warn', `[STEP 1a] acceptAllDevices HATA: ${errA.message} (code=${(errA as DOMException).code})`);
-      log('info', `[STEP 1a] namePrefix filter'larına düşülüyor…`);
+      log('warn', `[STEP 1] acceptAllDevices HATA: ${errA.message}`);
+      log('info', `[STEP 1] namePrefix filter'larına düşülüyor…`);
 
       interface MyFilter { services?: string[]; namePrefix?: string; }
       const filters: MyFilter[] = [
-        { services: ['0000fee0-0000-1000-8000-00805f9b34fb'] },
+        { services: [uuidExpand('fee0')] },
         { namePrefix: 'Xiaomi Smart Band' },
         { namePrefix: 'Mi Smart Band' },
         { namePrefix: 'Xiaomi' },
@@ -166,11 +173,12 @@ btnConnect.addEventListener('click', async () => {
         { namePrefix: 'Mi' },
       ];
 
-      device = await navigator.bluetooth.requestDevice({
-        filters,
-        optionalServices: BAND_SERVICE_UUIDS,
-      });
-      log('info', `[STEP 1a] namePrefix filter ile cihaz seçildi`);
+      device = await withTimeout(
+        navigator.bluetooth.requestDevice({ filters, optionalServices: BAND_SERVICE_UUIDS }),
+        30000,
+        'requestDevice-filters',
+      );
+      log('info', `[STEP 1] namePrefix filter OK`);
     }
 
     log('info', `══════════ [STEP 2] CIHAZ BILGILERI ══════════`);
@@ -179,278 +187,277 @@ btnConnect.addEventListener('click', async () => {
     log('info', `  GATT     : ${device.gatt?.connected ?? false}`);
     log('info', `  GATT obj : ${device.gatt ? 'mevcut' : 'NULL!'}`);
     // @ts-ignore
-    const uuids: string[] | undefined = device.uuids;
-    if (uuids?.length) {
-      log('info', `  Cihaz UUIDs: ${uuids.join(', ')}`);
+    if ((device as any).uuids?.length) {
+      log('info', `  Cihaz UUIDs: ${(device as any).uuids.join(', ')}`);
     } else {
-      log('info', `  Cihaz UUIDs: (yok / erişilemedi)`);
+      log('info', `  Cihaz UUIDs: yok`);
     }
-    // @ts-ignore
-    if (typeof (device as any).watchAdvertisements === 'function') {
-      try {
-        await (device as any).watchAdvertisements();
-        log('info', '  Reklam dinlemesi başlatıldı');
-      } catch {}
-    }
-    log('info', `══════════════════════════════════════════════════`);
 
     // ──────────────────────────────────────────
-    // STEP 3 — GATT CONNECT
+    // STEP 3 — GATT CONNECT (timeout 15sn)
     // ──────────────────────────────────────────
     log('info', `═════ [STEP 3] GATT CONNECT ═════`);
-    if (!device.gatt) {
-      throw new Error('[STEP 3] device.gatt NULL — bluetooth adaptörü kapalı olabilir!');
-    }
+    if (!device.gatt) throw new Error('[STEP 3] device.gatt NULL');
 
     try {
-      gattServer = await device.gatt.connect();
-      log('info', `[STEP 3] GATT server bağlandı: connected=${gattServer.connected}`);
-    } catch (errGatt: any) {
-      log('error', `[STEP 3] device.gatt.connect() HATA`);
-      log('error', `  message  : ${errGatt.message}`);
-      log('error', `  code     : ${(errGatt as DOMException).code}`);
-      log('error', `  name     : ${(errGatt as DOMException).name}`);
-      log('error', `  stack    : ${(errGatt as Error).stack ?? '(yok)'}`);
-      throw new Error(`GATT connect failed: ${errGatt.message}`);
+      gattServer = await withTimeout(device.gatt.connect(), 15000, 'gatt.connect');
+      log('info', `[STEP 3] GATT connected=${gattServer.connected}`);
+    } catch (errG: any) {
+      log('error', `[STEP 3] gatt.connect HATA: ${errG.message}`);
+      log('error', `  stack: ${(errG as Error).stack ?? ''}`);
+      throw errG;
     }
 
     // ──────────────────────────────────────────
-    // STEP 4 — ENUMERATE ALL PRIMARY SERVICES
+    // STEP 4 — GET ALL PRIMARY SERVICES (timeout 10sn)
     // ──────────────────────────────────────────
     log('info', `═════ [STEP 4] PRIMARY SERVICELER ═════`);
     let allServices: BluetoothRemoteGATTService[] = [];
-
     try {
-      allServices = await gattServer.getPrimaryServices();
-      log('info', `[STEP 4] getPrimaryServices() OK — ${allServices.length} adet service bulundu`);
-    } catch (errSvc: any) {
-      log('error', `[STEP 4] getPrimaryServices() HATA`);
-      log('error', `  message  : ${errSvc.message}`);
-      log('error', `  code     : ${(errSvc as DOMException).code}`);
-      log('error', `  name     : ${(errSvc as DOMException).name}`);
-      log('error', `  stack    : ${(errSvc as Error).stack ?? '(yok)'}`);
-      throw new Error(`getPrimaryServices failed: ${errSvc.message}`);
-    }
-
-    if (allServices.length === 0) {
-      log('warn', `[STEP 4] Hiç service bulunamadı! getPrimaryService(uuid) denenecek…`);
-    } else {
-      log('info', `[STEP 4] Bulunan tüm serviceler:`);
-      for (let i = 0; i < allServices.length; i++) {
-        const s = allServices[i];
-        const uuid = s.uuid;
-        const isPrimary = s.isPrimary ? 'primary' : 'secondary';
-        log('info', `  [${i}] UUID=${uuid} (${isPrimary})`);
-
-        // ──────────────────────────────────────────
-        // STEP 4a — ENUMERATE CHARACTERISTICS PER SERVICE
-        // ──────────────────────────────────────────
+      allServices = await withTimeout(gattServer.getPrimaryServices(), 10000, 'getPrimaryServices');
+      log('info', `[STEP 4] ${allServices.length} service bulundu`);
+    } catch (errS: any) {
+      log('error', `[STEP 4] getPrimaryServices HATA: ${errS.message}`);
+      log('info', `[STEP 4] Tek tek getPrimaryService deneniyor…`);
+      // Bazı ortamlarda getPrimaryServices() desteklenmez — fallback
+      for (const uuid of BAND_SERVICE_UUIDS) {
         try {
-          const chars = await s.getCharacteristics();
-          log('info', `        → ${chars.length} characteristic(s):`);
-          for (let j = 0; j < chars.length; j++) {
-            const c = chars[j];
-            const props: string[] = [];
-            if (c.properties.read) props.push('read');
-            if (c.properties.write) props.push('write');
-            if (c.properties.writeWithoutResponse) props.push('writeWithoutResponse');
-            if (c.properties.notify) props.push('notify');
-            if (c.properties.indicate) props.push('indicate');
-            log('info', `          [${j}] ${c.uuid}  [${props.join(', ')}]`);
-          }
-        } catch (errChar: any) {
-          log('warn', `        → getCharacteristics() HATA: ${errChar.message}`);
-        }
+          const svc = await withTimeout(gattServer.getPrimaryService(uuid), 3000, `getService(${uuid})`);
+          allServices.push(svc);
+          log('info', `  + ${uuid}`);
+        } catch { /* yok */ }
       }
+      log('info', `[STEP 4] Fallback ile ${allServices.length} service bulundu`);
     }
 
     // ──────────────────────────────────────────
-    // STEP 5 — BUL 0xfee0 SERVICE
+    // STEP 4a — CHARACTERISTIC ENUMERATION
+    // Önce tüm characteristic'leri al (paralel, hata yut)
     // ──────────────────────────────────────────
-    log('info', `═════ [STEP 5] SERVICE 0xfee0 ═════`);
+    log('info', `═════ [STEP 4a] CHARACTERISTIC ENUMERATION ═════`);
 
-    // Önce enumerated listesinden bulmayı dene
-    let fee0Service: BluetoothRemoteGATTService | null = null;
-
-    // Tam ve kısa UUID'leri dene
-    const fee0Full = '0000fee0-0000-1000-8000-00805f9b34fb';
+    // Service → characteristic[] haritası
+    const charMap = new Map<string, { uuid: string; props: string[] }[]>();
     for (const s of allServices) {
-      if (s.uuid.toLowerCase() === fee0Full) {
-        fee0Service = s;
-        log('info', `[STEP 5a] 0xfee0 service enumerated listesinde bulundu`);
-        break;
-      }
-    }
-
-    if (!fee0Service) {
-      log('info', `[STEP 5b] Enumerated listesinde 0xfee0 yok, getPrimaryService(uuid) deneniyor…`);
+      let chars: BluetoothRemoteGATTCharacteristic[] = [];
       try {
-        fee0Service = await gattServer.getPrimaryService(fee0Full);
-        log('info', `[STEP 5b] getPrimaryService(0xfee0) BAŞARILI`);
-      } catch (errFee: any) {
-        log('error', `[STEP 5b] 0xfee0 servisi BULUNAMADI!`);
-        log('error', `  message  : ${errFee.message}`);
-        log('error', `  code     : ${(errFee as DOMException).code}`);
-        log('error', `  name     : ${(errFee as DOMException).name}`);
-        log('error', `  stack    : ${(errFee as Error).stack ?? '(yok)'}`);
+        chars = await withTimeout(s.getCharacteristics(), 5000, `chars(${s.uuid})`);
+      } catch (e: any) {
+        log('warn', `  ${s.uuid} → getCharacteristics HATA: ${e.message}`);
+        continue;
+      }
+      log('info', `  ${s.uuid} → ${chars.length} char(s):`);
+      const list: { uuid: string; props: string[] }[] = [];
+      for (const c of chars) {
+        const p: string[] = [];
+        if (c.properties.read) p.push('R');
+        if (c.properties.write) p.push('W');
+        if (c.properties.writeWithoutResponse) p.push('WW');
+        if (c.properties.notify) p.push('N');
+        if (c.properties.indicate) p.push('I');
+        list.push({ uuid: c.uuid, props: p });
+        log('info', `    ${c.uuid}  [${p.join('+')}]`);
+      }
+      charMap.set(s.uuid, list);
+    }
 
-        // Fallback: enumerated servislerden ilk uygun olanı dene
-        log('warn', `[STEP 5c] 0xfee0 kritik — baglanti kurulamaz. Tüm servis UUID'leri listeleniyor:`);
-        for (const s of allServices) {
-          log('warn', `  Mevcut service: ${s.uuid}`);
-        }
-        throw errFee;
+    // ──────────────────────────────────────────
+    // STEP 5 — AUTO-DETECT WRITE/NOTIFY CHARACTERISTICS
+    // Öncelik: FE95 → fee0 → ilk uygun
+    // ──────────────────────────────────────────
+    log('info', `═════ [STEP 5] CHAR DETECT ═════`);
+
+    function findService(uuid: string): string | null {
+      const full = uuidExpand(uuid);
+      for (const [svcUuid] of charMap) {
+        if (svcUuid.toLowerCase() === full) return svcUuid;
+      }
+      return null;
+    }
+
+    function findChar(serviceUuid: string, shortUuid: string): string | null {
+      const full = uuidExpand(shortUuid);
+      const chars = charMap.get(serviceUuid);
+      if (!chars) return null;
+      for (const c of chars) {
+        if (c.uuid.toLowerCase() === full) return c.uuid;
+      }
+      return null;
+    }
+
+    function findFirstChar(serviceUuid: string, propFilter: (p: string[]) => boolean): string | null {
+      const chars = charMap.get(serviceUuid);
+      if (!chars) return null;
+      for (const c of chars) {
+        if (propFilter(c.props)) return c.uuid;
+      }
+      return null;
+    }
+
+    let svcForWrite: BluetoothRemoteGATTService | null = null;
+    let svcForNotify: BluetoothRemoteGATTService | null = null;
+    let writeUuid = '';
+    let notifyUuid = '';
+
+    // ADAY 1: FE95 service (Mi Band 6+) → 0050 write, 005E/005F notify
+    const fe95 = findService('fe95');
+    if (fe95) {
+      log('info', `[STEP 5] FE95 servisi bulundu, characteristic aranıyor…`);
+      const w = findChar(fe95, '0050') || findFirstChar(fe95, p => p.includes('W') || p.includes('WW'));
+      const n = findChar(fe95, '005e') || findChar(fe95, '005f') || findFirstChar(fe95, p => p.includes('N') || p.includes('I'));
+      if (w && n) {
+        svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
+        writeUuid = w;
+        notifyUuid = n;
+        log('info', `[STEP 5] FE95 kullanılacak: write=${w} notify=${n}`);
+      } else {
+        log('warn', `[STEP 5] FE95'te uygun char pair bulunamadı (w=${w} n=${n})`);
       }
     }
 
-    // ──────────────────────────────────────────
-    // STEP 6 — 0xfee1 WRITE CHARACTERISTIC
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 6] CHAR 0xfee1 (WRITE) ═════`);
-    try {
-      writeChar = await fee0Service.getCharacteristic(
-        '0000fee1-0000-1000-8000-00805f9b34fb',
-      );
-      log('info', `[STEP 6] 0xfee1 characteristic alındı`);
+    // ADAY 2: fee0 service (legacy) → fee1 write, fee2 notify
+    if (!svcForWrite || !svcForNotify) {
+      const fee0 = findService('fee0');
+      if (fee0) {
+        log('info', `[STEP 5] fee0 servisi bulundu`);
+        const w = findChar(fee0, 'fee1');
+        const n = findChar(fee0, 'fee2');
+        if (w && n) {
+          svcForWrite = svcForNotify = allServices.find(s => s.uuid === fee0)!;
+          writeUuid = w;
+          notifyUuid = n;
+          log('info', `[STEP 5] fee0 kullanılacak: write=${w} notify=${n}`);
+        }
+      }
+    }
 
-      // Özelliklerini logla
-      const wProps = writeChar.properties;
-      log('info', `  write             : ${wProps.write}`);
-      log('info', `  writeWithoutResp  : ${wProps.writeWithoutResponse}`);
-      log('info', `  read              : ${wProps.read}`);
-    } catch (errW: any) {
-      log('error', `[STEP 6] 0xfee1 characteristic HATA`);
-      log('error', `  message  : ${errW.message}`);
-      log('error', `  code     : ${(errW as DOMException).code}`);
-      log('error', `  name     : ${(errW as DOMException).name}`);
-      log('error', `  stack    : ${(errW as Error).stack ?? '(yok)'}`);
-      throw errW;
+    // ADAY 3: İlk W+WW bulunan service + ilk N+I bulunan service
+    if (!svcForWrite || !svcForNotify) {
+      log('info', `[STEP 5] Bilinen servisler yok, ilk uygun char pair taranıyor…`);
+      for (const [svcUuid, chars] of charMap) {
+        const svc = allServices.find(s => s.uuid === svcUuid)!;
+        const w = chars.find(c => c.props.includes('W') || c.props.includes('WW'));
+        const n = chars.find(c => c.props.includes('N') || c.props.includes('I'));
+        if (w && n) {
+          svcForWrite = svcForNotify = svc;
+          writeUuid = w.uuid;
+          notifyUuid = n.uuid;
+          log('info', `[STEP 5] İlk uygun: svc=${svcUuid} write=${w.uuid} notify=${n.uuid}`);
+          break;
+        }
+      }
+    }
+
+    if (!svcForWrite || !writeUuid || !notifyUuid) {
+      throw new Error(`[STEP 5] Hiçbir uygun write/notify characteristic pair bulunamadı!`);
     }
 
     // ──────────────────────────────────────────
-    // STEP 7 — 0xfee2 NOTIFY CHARACTERISTIC
+    // STEP 6 — GET CHARACTERISTIC REFERENCES (timeout 5sn)
     // ──────────────────────────────────────────
-    log('info', `═════ [STEP 7] CHAR 0xfee2 (NOTIFY) ═════`);
-    try {
-      notifyChar = await fee0Service.getCharacteristic(
-        '0000fee2-0000-1000-8000-00805f9b34fb',
-      );
-      log('info', `[STEP 7] 0xfee2 characteristic alındı`);
+    log('info', `═════ [STEP 6] GET CHAR REFERENCES ═════`);
+    log('info', `  Service   : ${svcForWrite.uuid}`);
+    log('info', `  Write char: ${writeUuid}`);
+    log('info', `  Notify char: ${notifyUuid}`);
 
-      const nProps = notifyChar.properties;
-      log('info', `  notify   : ${nProps.notify}`);
-      log('info', `  indicate  : ${nProps.indicate}`);
-      log('info', `  read     : ${nProps.read}`);
+    try {
+      writeChar = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 5000, 'getChar(write)');
+      notifyChar = await withTimeout(svcForNotify!.getCharacteristic(notifyUuid), 5000, 'getChar(notify)');
+      log('info', `[STEP 6] writeChar alındı`);
+      log('info', `  write: ${writeChar.properties.write}, writeWithoutResp: ${writeChar.properties.writeWithoutResponse}`);
+      log('info', `[STEP 6] notifyChar alındı`);
+      log('info', `  notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
+    } catch (errC: any) {
+      log('error', `[STEP 6] getCharacteristic HATA: ${errC.message}`);
+      throw errC;
+    }
+
+    // ──────────────────────────────────────────
+    // STEP 7 — START NOTIFICATIONS (timeout 5sn)
+    // ──────────────────────────────────────────
+    log('info', `═════ [STEP 7] START NOTIFICATIONS ═════`);
+    try {
+      await withTimeout(notifyChar.startNotifications(), 5000, 'startNotifications');
+      log('info', `[STEP 7] startNotifications() BAŞARILI`);
     } catch (errN: any) {
-      log('error', `[STEP 7] 0xfee2 characteristic HATA`);
-      log('error', `  message  : ${errN.message}`);
-      log('error', `  code     : ${(errN as DOMException).code}`);
-      log('error', `  name     : ${(errN as DOMException).name}`);
-      log('error', `  stack    : ${(errN as Error).stack ?? '(yok)'}`);
+      log('error', `[STEP 7] startNotifications HATA: ${errN.message}`);
+      log('error', `  stack: ${(errN as Error).stack ?? ''}`);
       throw errN;
     }
 
     // ──────────────────────────────────────────
-    // STEP 8 — START NOTIFICATIONS
+    // STEP 8 — AUTH HANDSHAKE
     // ──────────────────────────────────────────
-    log('info', `═════ [STEP 8] START NOTIFICATIONS ═════`);
-    try {
-      await notifyChar.startNotifications();
-      log('info', `[STEP 8] startNotifications() BAŞARILI`);
-    } catch (errNot: any) {
-      log('error', `[STEP 8] startNotifications() HATA`);
-      log('error', `  message  : ${errNot.message}`);
-      log('error', `  code     : ${(errNot as DOMException).code}`);
-      log('error', `  name     : ${(errNot as DOMException).name}`);
-      log('error', `  stack    : ${(errNot as Error).stack ?? '(yok)'}`);
-      throw errNot;
-    }
-
-    // ──────────────────────────────────────────
-    // STEP 9 — AUTH HANDSHAKE
-    // ──────────────────────────────────────────
-    log('info', `═════ [STEP 9] AUTH HANDSHAKE ═════`);
+    log('info', `═════ [STEP 8] AUTH HANDSHAKE ═════`);
 
     const longTermKey = new Uint8Array(16);
     crypto.getRandomValues(longTermKey);
     log('info', `LongTermKey (demo, random): ${hex(longTermKey)}`);
 
-    // Step 9a: phone → band  AUTH_INIT (opcode 26)
+    // 8a: AUTH_INIT (opcode 26)
     const phoneNonce = new Uint8Array(16);
     crypto.getRandomValues(phoneNonce);
     log('info', `Phone nonce: ${hex(phoneNonce)}`);
 
     const initFrame = new Uint8Array(25);
-    initFrame[0] = 100;
-    initFrame[1] = 1;
-    initFrame[2] = 26;
-    initFrame[3] = 0x0a;
-    initFrame[4] = 16;
+    initFrame[0] = 100;    // type=PLAINTEXT
+    initFrame[1] = 1;      // category=SYSTEM
+    initFrame[2] = 26;     // opcode=AUTH_INIT
+    initFrame[3] = 0x0a;   // tag field 1 bytes
+    initFrame[4] = 16;     // length
     initFrame.set(phoneNonce, 5);
     log('sent', `AUTH_INIT → ${hex(initFrame)}`);
 
     try {
-      await writeChar.writeValue(initFrame);
-      log('info', `[STEP 9a] AUTH_INIT gönderildi`);
-    } catch (errWv: any) {
-      log('error', `[STEP 9a] writeValue(AUTH_INIT) HATA`);
-      log('error', `  message  : ${errWv.message}`);
-      log('error', `  code     : ${(errWv as DOMException).code}`);
-      log('error', `  name     : ${(errWv as DOMException).name}`);
-      log('error', `  stack    : ${(errWv as Error).stack ?? '(yok)'}`);
-      throw errWv;
+      await withTimeout(writeChar.writeValue(initFrame), 5000, 'write AUTH_INIT');
+      log('info', `[STEP 8a] AUTH_INIT gönderildi (${initFrame.length}B)`);
+    } catch (errW: any) {
+      log('error', `[STEP 8a] writeValue(AUTH_INIT) HATA: ${errW.message}`);
+      log('error', `  stack: ${(errW as Error).stack ?? ''}`);
+      throw errW;
     }
 
-    // Step 9b: band → phone  AUTH_RESPONSE (opcode 27 expected)
-    log('info', `[STEP 9b] AUTH_RESPONSE bekleniyor…`);
+    // 8b: AUTH_RESPONSE bekle (opcode 27)
+    log('info', `[STEP 8b] AUTH_RESPONSE bekleniyor (timeout 10sn)…`);
     let authResp: Uint8Array;
     try {
-      authResp = await waitOneNotification(10000);
+      authResp = await withTimeout(waitOneNotification(12000), 12000, 'auth notification');
       log('recv', `AUTH_RESPONSE ← ${hex(authResp)}`);
-    } catch (errTo: any) {
-      log('error', `[STEP 9b] AUTH_RESPONSE zamanaşımı/hatası`);
-      log('error', `  message  : ${errTo.message}`);
-      log('error', `  stack    : ${(errTo as Error).stack ?? '(yok)'}`);
-      throw errTo;
+    } catch (errT: any) {
+      log('error', `[STEP 8b] AUTH_RESPONSE alınamadı: ${errT.message}`);
+      log('warn', `[STEP 8b] Auth atlanıyor, bağlantı hala açık mı kontrol…`);
+      throw errT;
     }
 
     if (authResp.length < 3) {
       throw new Error(`Auth response too short: ${authResp.length}B`);
     }
     const [rType, rCat, rOp] = authResp;
-    log('info',
-      `Response header: type=${rType}  cat=${rCat}  opcode=${rOp}  payload=${authResp.length - 3}B`);
+    log('info', `  Response: type=${rType} cat=${rCat} opcode=${rOp} payload=${authResp.length - 3}B`);
 
     setStatus('Authenticated ✓', true);
-    log('info', '=== AUTH COMPLETE ===');
+    log('info', '══════════ AUTH COMPLETE ══════════');
 
     // ──────────────────────────────────────────
-    // STEP 10 — BATTERY
+    // STEP 9 — BATTERY (opcode 12)
     // ──────────────────────────────────────────
-    log('info', `═════ [STEP 10] BATTERY ═════`);
+    log('info', `═════ [STEP 9] BATTERY ═════`);
     const batReq = new Uint8Array(3);
     batReq[0] = 100; batReq[1] = 5; batReq[2] = 12;
     log('sent', `BATTERY_REQ → ${hex(batReq)}`);
 
     try {
-      await writeChar.writeValue(batReq);
-    } catch (errBat: any) {
-      log('error', `BATTERY_REQ write HATA (pas geçiliyor): ${errBat.message}`);
-    }
-
-    try {
-      const batResp = await waitOneNotification(5000);
+      await withTimeout(writeChar.writeValue(batReq), 5000, 'battery write');
+      const batResp = await withTimeout(waitOneNotification(5000), 5000, 'battery notify');
       log('recv', `BATTERY_RESP ← ${hex(batResp)}`);
       if (batResp.length >= 4) {
-        const level    = batResp[3];
-        const charging = batResp.length > 4 ? batResp[4] === 1 : false;
-        valBattery.textContent = `${level}`;
-        valCharging.textContent = charging ? 'Charging' : 'Not charging';
+        valBattery.textContent = `${batResp[3]}`;
+        valCharging.textContent = batResp.length > 4 && batResp[4] === 1 ? 'Charging' : 'Not charging';
         panelBattery.style.display = 'block';
-        log('info', `Battery: ${level}%  ${charging ? '(charging)' : ''}`);
+        log('info', `Battery: ${batResp[3]}%`);
       }
     } catch {
-      log('warn', 'BATTERY_RESP alınamadı (pas geçiliyor)');
+      log('warn', 'Battery sorgusu başarısız (pas geçildi)');
     }
 
     // ── Ready ──
@@ -459,13 +466,12 @@ btnConnect.addEventListener('click', async () => {
     log('info', '══════════ DEVICE READY ══════════');
 
   } catch (err: any) {
-    // ── FULL ERROR REPORT ──
     const errCode = (err as DOMException).code;
     const errName = (err as DOMException).name;
     log('error', `══════════ HATA ══════════`);
     log('error', `  message  : ${err.message ?? err}`);
-    log('error', `  code     : ${errCode}`);
-    log('error', `  name     : ${errName}`);
+    log('error', `  code     : ${errCode ?? 'N/A'}`);
+    log('error', `  name     : ${errName ?? 'N/A'}`);
     log('error', `  stack    :`);
     const stackLines = ((err as Error).stack ?? '(stack yok)').split('\n');
     stackLines.forEach(line => log('error', `    ${line.trim()}`));
@@ -490,7 +496,6 @@ btnHrStart.addEventListener('click', async () => {
     pkt[0] = 101; pkt[1] = 2; pkt[2] = 69;
     log('sent', `HR_SUBSCRIBE → ${hex(pkt)}`);
     await writeChar.writeValue(pkt);
-
     startHrListener();
     log('info', 'Heart rate listener active');
   } catch (err: any) {
@@ -504,7 +509,6 @@ btnHrStop.addEventListener('click', async () => {
     if (!writeChar) throw new Error('Not connected');
     btnHrStart.disabled = false;
     btnHrStop.disabled = true;
-
     stopHrListener();
     const pkt = new Uint8Array(3);
     pkt[0] = 101; pkt[1] = 2; pkt[2] = 70;

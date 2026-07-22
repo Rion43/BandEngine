@@ -62,6 +62,16 @@ async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
   return null;
 }
 
+async function detectFileType(buffer: ArrayBuffer): Promise<'zip' | 'sqlite' | null> {
+  const header = new Uint8Array(buffer.slice(0, 16));
+  const hex = Array.from(header).map(b => b.toString(16).padStart(2, '0')).join('');
+  // ZIP: PK\x03\x04
+  if (hex.startsWith('504b0304')) return 'zip';
+  // SQLite: SQLite format 3\x00
+  if (hex.startsWith('53514c697465')) return 'sqlite';
+  return null;
+}
+
 async function handleFile(file: File) {
   const ws = document.getElementById('wizard-status')!;
   ws.className = 'wizard-status loading';
@@ -69,37 +79,29 @@ async function handleFile(file: File) {
   ws.style.display = 'block';
 
   try {
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    let buffer: ArrayBuffer;
+    const buffer = await file.arrayBuffer();
+    const fileType = await detectFileType(buffer);
+    if (!fileType) throw new Error('Desteklenmeyen dosya. Android .zip veya iPhone .sqlite gönderin.');
+
     let key: string | null = null;
 
-    if (ext === 'zip') {
-      // Android backup ZIP
-      const zipData = await file.arrayBuffer();
-      const zip = await JSZip.loadAsync(zipData);
-
-      // manifest.sqlite veya .db dosyasını bul
+    if (fileType === 'zip') {
+      const zip = await JSZip.loadAsync(buffer);
       let dbFile = zip.file(/manifest\.sqlite/i)[0] ||
                    zip.file(/\.db$/i)[0] ||
                    zip.file(/device_key/i)[0];
       if (!dbFile) {
-        // Tüm dosyaları listele, .db/sqlite ara
         const allFiles = Object.keys(zip.files).filter(f =>
           /\.(sqlite|db)$/i.test(f) || /device/i.test(f) || /auth/i.test(f)
         );
         if (allFiles.length === 0) throw new Error('ZIP içinde SQLite dosyası bulunamadı');
         dbFile = zip.file(allFiles[0]);
       }
-
       const dbData = await dbFile.async('arraybuffer');
       key = await extractKeyFromDB(dbData);
-
-    } else if (ext === 'sqlite') {
-      // iPhone manifest.sqlite
-      buffer = await file.arrayBuffer();
-      key = await extractKeyFromDB(buffer);
     } else {
-      throw new Error('Desteklenmeyen dosya türü. .zip (Android) veya .sqlite (iPhone) kullanın.');
+      // .sqlite — direkt oku
+      key = await extractKeyFromDB(buffer);
     }
 
     if (!key) {

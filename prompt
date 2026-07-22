@@ -1,0 +1,29 @@
+Dur.
+
+Artık AUTH paketini değiştirme.
+
+Bluetooth katmanı tamamen çalışıyor.
+
+Sorun authentication protokolünde.
+
+İnternette ve mevcut reverse engineering notlarında Xiaomi Smart Band 9 BLE authentication protokolünü araştır.
+
+Özellikle şunları doğrula:
+
+- FE95 authentication flow
+- AUTH_INIT protobuf
+- opcode
+- nonce formatı
+- HKDF sırası
+- LongTermKey kaynağı
+- encryptKey gerçekten LTK mı?
+- Mi Fitness hangi characteristic'e yazıyor?
+- İlk notification nasıl görünüyor?
+
+Elimizdeki implementasyonu bunlarla karşılaştır ve hangi noktanın uyuşmadığını raporla.
+
+Kod üretme.
+
+Tahmin yürütme.
+
+Sadece gerçek referanslara dayanarak analiz yap.

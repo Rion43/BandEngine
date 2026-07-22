@@ -2,336 +2,26 @@ import './style.css';
 import { log, hex } from './logger.js';
 
 // ═══════════════════════════════════════════
-// LTK WIZARD — Mi Fitness backup'tan encrypt_key çıkar
+// SÜRÜM — bu dosyadaki tek kaynak
+// package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-
-declare const JSZip: any;
-declare const initSqlJs: any;
-
-function showWizard() {
-  document.getElementById('wizard')!.style.display = '';
-  document.getElementById('main-ui')!.style.display = 'none';
-}
-function showMainUI() {
-  document.getElementById('wizard')!.style.display = 'none';
-  document.getElementById('main-ui')!.style.display = '';
-}
-
-// ── SQLite WASM yükleyici ──
-const SQLITE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0';
-let _SQL: any = null;
-async function getSQL(): Promise<any> {
-  if (_SQL) return _SQL;
-  const errors: string[] = [];
-  for (const base of [SQLITE_CDN, 'https://unpkg.com/sql.js@1.11.0/dist', 'https://cdn.jsdelivr.net/npm/sql.js@1.11.0/dist']) {
-    try { _SQL = await initSqlJs({ locateFile: (f: string) => `${base}/${f}` }); return _SQL; }
-    catch (e: any) { errors.push(`${base}: ${e.message}`); }
-  }
-  try { _SQL = await initSqlJs({ locateFile: () => '' }); return _SQL; } catch {}
-  throw new Error(`SQLite yuklenemedi: ${errors.join(' | ')}`);
-}
-
-// ── Binary Plist (bplist00) parser ──
-function parseBPList(buf: Uint8Array): any {
-  const magic = new TextDecoder().decode(buf.slice(0, 8));
-  if (magic !== 'bplist00') throw new Error('Not bplist00');
-  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const len = buf.length;
-  const tr = len - 32;
-  const offTableOff = Number(dv.getBigUint64(tr + 8, false));
-  const numObj = Number(dv.getBigUint64(tr + 16, false));
-  const rootIdx = dv.getUint32(tr + 24, false);
-  const offSz = (tr - offTableOff) / numObj;
-  const offs: number[] = [];
-  for (let i = 0; i < numObj; i++) {
-    const p = offTableOff + i * offSz;
-    if (offSz === 1) offs.push(buf[p]);
-    else if (offSz === 2) offs.push(dv.getUint16(p, false));
-    else if (offSz === 4) offs.push(dv.getUint32(p, false));
-    else offs.push(Number(dv.getBigUint64(p, false)));
-  }
-
-  function refSize() { return numObj <= 256 ? 1 : numObj <= 65536 ? 2 : 4; }
-
-  function readObj(pos: number): any {
-    const b = buf[pos];
-    const type = (b >> 4) & 0xf;
-    const info = b & 0xf;
-    let p = pos + 1;
-
-    function readLen(): { length: number, after: number } {
-      if (info <= 0x0e) return { length: info, after: p };
-      // info == 0x0f: length follows as inline int byte
-      const sub = buf[p]; p++;
-      const subType = (sub >> 4) & 0xf;
-      let subInfo = sub & 0xf;
-      // Sometimes it's 0x1_ format = integer with byte count from nibble
-      // Actually in bplist, after 0x0f, the next byte indicates int sizing:
-      // bits: 0x1k where k=0→1B, 1→2B, 2→4B, 3→8B
-      let intBytes: number;
-      if (subType === 1) intBytes = 1 << subInfo; // proper integer encoding
-      else intBytes = 1 << (sub & 0x03); // fallback
-      let length = 0;
-      for (let i = 0; i < intBytes; i++) { length = (length << 8) | buf[p]; p++; }
-      return { length, after: p };
-    }
-
-    switch (type) {
-      case 0: return null;
-      case 1: return false;
-      case 2: return true;
-      case 4: { // integer
-        const byteLen = 1 << info;
-        if (byteLen === 1) return buf[p];
-        if (byteLen === 2) return dv.getUint16(p, false);
-        if (byteLen === 4) return dv.getUint32(p, false);
-        if (byteLen === 8) return Number(dv.getBigUint64(p, false));
-        return 0;
-      }
-      case 5: return info === 2 ? dv.getFloat32(p, false) : dv.getFloat64(p, false);
-      case 6: return dv.getFloat64(p, false);
-      case 8: { // data
-        const { length, after } = readLen();
-        return buf.slice(after, after + length);
-      }
-      case 9: { // ASCII string
-        const { length, after } = readLen();
-        return new TextDecoder().decode(buf.slice(after, after + length));
-      }
-      case 0xa: { // Unicode string (UTF-16BE)
-        const { length, after } = readLen();
-        const chars: string[] = [];
-        for (let i = 0; i < length; i++) {
-          const cp = (buf[after + i * 2] << 8) | buf[after + i * 2 + 1];
-          chars.push(String.fromCharCode(cp));
-        }
-        return chars.join('');
-      }
-      case 0xc: { // array
-        const { length, after } = readLen();
-        const rs = refSize();
-        const arr: any[] = [];
-        for (let i = 0; i < length; i++) {
-          let idx: number;
-          if (rs === 1) idx = buf[after + i];
-          else if (rs === 2) idx = dv.getUint16(after + i * 2, false);
-          else idx = dv.getUint32(after + i * 4, false);
-          arr.push(readObj(offs[idx]));
-        }
-        return arr;
-      }
-      case 0xd: { // dictionary
-        const { length, after } = readLen();
-        const rs = refSize();
-        const keyRefs: number[] = [];
-        const valRefs: number[] = [];
-        const keyArea = after;
-        const valArea = after + length * rs;
-        for (let i = 0; i < length; i++) {
-          if (rs === 1) { keyRefs.push(buf[keyArea + i]); valRefs.push(buf[valArea + i]); }
-          else if (rs === 2) { keyRefs.push(dv.getUint16(keyArea + i * 2, false)); valRefs.push(dv.getUint16(valArea + i * 2, false)); }
-          else { keyRefs.push(dv.getUint32(keyArea + i * 4, false)); valRefs.push(dv.getUint32(valArea + i * 4, false)); }
-        }
-        const dict: any = {};
-        for (let i = 0; i < length; i++) {
-          const k = readObj(offs[keyRefs[i]]);
-          if (k != null) dict[String(k)] = readObj(offs[valRefs[i]]);
-        }
-        return dict;
-      }
-      default: return null;
-    }
-  }
-
-  return readObj(offs[rootIdx]);
-}
-
-// ── NSKeyedArchiver'dan encrypt_key çıkar ──
-function extractKeyFromArchiver(root: any): string | null {
-  if (!root || typeof root !== 'object') return null;
-
-  // NSKeyedArchiver: root.$objects + root.$top
-  if (root.$archiver !== 'NSKeyedArchiver') {
-    // Düz dictionary olabilir (iOS 15+)
-    return findKeyInDict(root);
-  }
-
-  const objects: any[] = root.$objects || [];
-  const top = root.$top;
-  if (!top || !objects.length) return null;
-
-  // $top'taki ilk değere git
-  const topKeys = Object.keys(top);
-  if (!topKeys.length) return null;
-  const topRef = top[topKeys[0]];
-  // NSKeyedArchiver'da $top değeri bir NSObject (dictionary) veya $UID referansı
-  let realRoot: any = null;
-  if (topRef && typeof topRef === 'object' && topRef.$UID != null) {
-    realRoot = objects[topRef.$UID];
-  } else if (typeof topRef === 'number') {
-    realRoot = objects[topRef];
-  } else {
-    realRoot = topRef;
-  }
-
-  return findKeyInDict(realRoot);
-}
-
-function findKeyInDict(obj: any): string | null {
-  if (!obj || typeof obj !== 'object') return null;
-
-  // Doğrudan encrypt_key varsa
-  for (const key of ['encrypt_key', 'encryptkey', 'EncryptKey', 'LTK', 'ltk', 'auth_key']) {
-    const val = obj[key];
-    if (val) {
-      const hex = toHex(val);
-      if (hex && hex.length === 32) return hex;
-    }
-  }
-
-  // İç içe dolaş
-  for (const k of Object.keys(obj)) {
-    const v = obj[k];
-    if (v && typeof v === 'object') {
-      const r = findKeyInDict(v);
-      if (r) return r;
-    }
-  }
-  return null;
-}
-
-function toHex(val: any): string | null {
-  if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val.toLowerCase();
-  if (val instanceof Uint8Array || val?.buffer instanceof ArrayBuffer) {
-    const arr = val instanceof Uint8Array ? val : new Uint8Array(val);
-    if (arr.length === 16) {
-      return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-  }
-  // NSData from bplist: berimbil boxed
-  if (val?.$UID != null) return null; // skip refs
-  return null;
-}
-
-// ── manifest.sqlite'den key çıkar ──
-async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
-  const SQL = await getSQL();
-  const db = new SQL.Database(new Uint8Array(buffer));
-
-  // Tüm tabloları listele
-  const tables: any[] = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-  const tableNames = tables.flatMap(t => t.values.map((v: any) => v));
-
-  // manifest tablosu + inline_data sütunu
-  for (const t of tableNames) {
-    const info: any[] = db.exec(`PRAGMA table_info(${t})`);
-    const cols = info[0]?.values.map((v: any) => v[1]) ?? [];
-    const dataCol = cols.find((c: string) => /inline_data|data|blob|value/i.test(c));
-    if (!dataCol) continue;
-    const rows: any[] = db.exec(`SELECT ${dataCol} FROM ${t} LIMIT 20`);
-    for (const row of rows) {
-      for (const val of row.values) {
-        if (!val) continue;
-        const bytes: Uint8Array = val instanceof Uint8Array ? val : new Uint8Array(val);
-        // bplist00 magic byte check
-        if (bytes.length < 12 || bytes[0] !== 0x62 /*b*/) continue;
-        try {
-          const plist = parseBPList(bytes);
-          if (!plist) continue;
-          const key = extractKeyFromArchiver(plist);
-          if (key) { db.close(); return key; }
-        } catch {}
-      }
-    }
-  }
-
-  db.close();
-  return null;
-}
-
-async function detectFileType(buffer: ArrayBuffer): Promise<'zip' | 'sqlite' | null> {
-  const h = new Uint8Array(buffer.slice(0, 16));
-  const hexStr = Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('');
-  if (hexStr.startsWith('504b0304')) return 'zip';
-  if (hexStr.startsWith('53514c697465')) return 'sqlite';
-  return null;
-}
-
-async function handleFile(file: File) {
-  const ws = document.getElementById('wizard-status')!;
-  ws.className = 'wizard-status loading';
-  ws.innerHTML = '⏳ Dosya işleniyor…';
-  ws.style.display = 'block';
-  document.getElementById('btn-connect-wizard')!.style.display = 'none';
-
-  try {
-    const buffer = await file.arrayBuffer();
-    const fileType = await detectFileType(buffer);
-    if (!fileType) throw new Error('Desteklenmeyen dosya. Android .zip veya iPhone .sqlite gönderin.');
-
-    let key: string | null = null;
-
-    if (fileType === 'zip') {
-      const zip = await JSZip.loadAsync(buffer);
-      const candidates = ['manifest.sqlite', 'manifest.db', 'device_key.db', 'mi_fit.db'];
-      let dbFile: any = null;
-      for (const name of candidates) {
-        dbFile = zip.file(new RegExp(name, 'i'))[0];
-        if (dbFile) break;
-      }
-      if (!dbFile) {
-        const all = Object.keys(zip.files).filter(f => /\.(sqlite|db)$/i.test(f));
-        if (all.length === 0) throw new Error('ZIP içinde SQLite veritabanı bulunamadı.');
-        dbFile = zip.file(all[0]);
-      }
-      key = await extractKeyFromDB(await dbFile.async('arraybuffer'));
-    } else {
-      key = await extractKeyFromDB(buffer);
-    }
-
-    if (!key) {
-      ws.className = 'wizard-status error';
-      ws.innerHTML = '❌ Güvenlik anahtarı bu dosyada bulunamadı.';
-      return;
-    }
-
-    // localStorage'a kaydet
-    localStorage.setItem('be_ltk', key);
-    ws.className = 'wizard-status success';
-    ws.innerHTML = '<span class="check">✅</span> Güvenlik Anahtarı Başarıyla Alındı<p style="font-size:12px;margin-top:4px;opacity:.8">Artık bu cihazda tekrar dosya seçmeniz gerekmeyecek.</p>';
-
-    // Bağlan butonunu göster
-    const btn = document.getElementById('btn-connect-wizard')!;
-    btn.style.display = '';
-    btn.onclick = () => { showMainUI(); startConnect(); };
-
-  } catch (e: any) {
-    ws.className = 'wizard-status error';
-    const msg = e.message.includes('ZIP') ? '❌ Log dosyası açılamadı.' :
-                e.message.includes('SQLite') || e.message.includes('sqlite') ? '❌ manifest.sqlite okunamadı.' :
-                '❌ ' + e.message;
-    ws.innerHTML = msg;
-  }
-}
+const VERSION = '1.8';
 
 // ═══════════════════════════════════════════
 // CONSTANTS (RE: Mi Fitness protocol)
 // ═══════════════════════════════════════════
-
 const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
   HEART_RATE_SUBSCRIBE: 69, HEART_RATE_UNSUBSCRIBE: 70,
-  BATTERY_INFO: 12, NOTIFICATION_PUSH: 41, NOTIFICATION_CLEAR: 42,
+  BATTERY_INFO: 12,
 };
 const CATEGORIES = { SYSTEM: 1, HEALTH: 2, ACTIVITY: 3, NOTIFICATION: 4, DEVICE: 5 };
 
 // ═══════════════════════════════════════════
 // CRYPTO (RE: Session.ts, AESCTR.ts, HKDF.ts)
 // ═══════════════════════════════════════════
-
 async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
   const k = await crypto.subtle.importKey('raw', key as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const sig = await crypto.subtle.sign('HMAC', k, data as any);
-  return new Uint8Array(sig);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data as any));
 }
 
 async function hkdfDerive(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array): Promise<Uint8Array> {
@@ -356,7 +46,6 @@ async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array, counter: Uint8Ar
 // ═══════════════════════════════════════════
 // PROTOCOL HELPERS (RE: PacketEncoder.ts)
 // ═══════════════════════════════════════════
-
 function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
   const out = new Uint8Array(2 + nonce.length);
   out[0] = 0x0a; out[1] = nonce.length; out.set(nonce, 2);
@@ -373,7 +62,6 @@ function buildPkt(cat: number, op: number, payload: Uint8Array): Uint8Array {
 // ═══════════════════════════════════════════
 // UI REFS
 // ═══════════════════════════════════════════
-
 const $ = (id: string) => document.getElementById(id)!;
 const btnConnect      = $('btn-connect') as HTMLButtonElement;
 const btnHrStart      = $('btn-hr-start') as HTMLButtonElement;
@@ -387,17 +75,107 @@ const valHr           = $('val-hr');
 const hrChart         = $('hr-chart');
 const panelBattery    = $('panel-battery');
 const panelHr         = $('panel-hr');
+const wizard          = $('wizard');
+const mainUI          = $('main-ui');
+const ltkInput        = $('ltk-input') as HTMLInputElement;
+const btnSaveKey      = $('btn-save-key') as HTMLButtonElement;
+const wizardStatus    = $('wizard-status');
+const ltkChars        = $('ltk-chars');
+const versionBadge    = $('version-badge');
 
 // ═══════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════
-
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
 let hrHistory: number[] = [];
 let _sessionAesKey: Uint8Array | null = null;
 let _sessionCounter: Uint8Array | null = null;
+
+// ═══════════════════════════════════════════
+// SÜRÜM GÖSTER
+// ═══════════════════════════════════════════
+versionBadge.textContent = `v${VERSION}`;
+
+// ═══════════════════════════════════════════
+// WIZARD — LTK textbox
+// ═══════════════════════════════════════════
+
+function showWizard() { wizard.style.display = ''; mainUI.style.display = 'none'; }
+function showMainUI() { wizard.style.display = 'none'; mainUI.style.display = ''; }
+
+ltkInput.addEventListener('input', () => {
+  const raw = ltkInput.value.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
+  ltkInput.value = raw;
+  ltkChars.textContent = `${raw.length}`;
+  ltkChars.parentElement!.className = 'wizard-counter' + (raw.length === 32 ? ' full' : '');
+
+  if (raw.length === 32) {
+    ltkInput.className = 'wizard-input valid';
+    btnSaveKey.disabled = false;
+    wizardStatus.className = 'wizard-status';
+    wizardStatus.style.display = 'none';
+  } else if (raw.length > 0 && !/^[0-9a-f]+$/.test(raw)) {
+    ltkInput.className = 'wizard-input error';
+    btnSaveKey.disabled = true;
+  } else {
+    ltkInput.className = 'wizard-input';
+    btnSaveKey.disabled = true;
+  }
+});
+
+btnSaveKey.addEventListener('click', () => {
+  const raw = ltkInput.value;
+  if (!/^[0-9a-f]{32}$/i.test(raw)) {
+    wizardStatus.className = 'wizard-status error';
+    wizardStatus.innerHTML = '❌ Geçerli bir anahtar girin (32 karakter hex: 0-9, a-f)';
+    wizardStatus.style.display = 'block';
+    return;
+  }
+
+  localStorage.setItem('be_ltk', raw.toLowerCase());
+  wizardStatus.className = 'wizard-status success';
+  wizardStatus.innerHTML = '✅ Güvenlik anahtarı kaydedildi.<br><small>Bu cihazda tekrar girmeniz gerekmeyecek.</small>';
+  wizardStatus.style.display = 'block';
+
+  setTimeout(() => { showMainUI(); startConnect(); }, 1500);
+});
+
+// ═══════════════════════════════════════════
+// SETTINGS — anahtar sıfırlama
+// ═══════════════════════════════════════════
+
+$('btn-settings').addEventListener('click', () => {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.innerHTML = `
+    <div class="modal-box">
+      <h3>⚙️ Ayarlar</h3>
+      <p>Güvenlik anahtarını sıfırlamak, mevcut anahtarı siler ve yeniden girmenizi gerektirir.</p>
+      <div class="btn-row">
+        <button class="danger" id="btn-reset-key">🔑 Güvenlik Anahtarını Değiştir</button>
+        <button id="btn-close-modal">İptal</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+
+  modal.querySelector('#btn-reset-key')!.addEventListener('click', () => {
+    localStorage.removeItem('be_ltk');
+    modal.remove();
+    gattServer?.disconnect();
+    gattServer = null; writeChar = null; notifyChar = null;
+    ltkInput.value = ''; ltkChars.textContent = '0';
+    btnSaveKey.disabled = true;
+    wizardStatus.className = 'wizard-status';
+    wizardStatus.style.display = 'none';
+    showWizard();
+  });
+
+  modal.querySelector('#btn-close-modal')!.addEventListener('click', () => modal.remove());
+  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+});
 
 // ═══════════════════════════════════════════
 // HELPERS
@@ -448,9 +226,7 @@ function startHrListener() {
   const h = (e: Event) => {
     const r = new Uint8Array((e.target as BluetoothRemoteGATTCharacteristic).value!.buffer);
     log('recv', `HR: ${hex(r)}`);
-    if (r.length >= 7) {
-      addHrSample(r.length > 7 ? r[7] : 0);
-    }
+    if (r.length >= 7) addHrSample(r.length > 7 ? r[7] : 0);
   };
   (notifyChar as any)._hr = h;
   notifyChar.addEventListener('characteristicvaluechanged', h);
@@ -506,14 +282,11 @@ async function startConnect() {
 
     const charMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
     for (const s of allSvcs) {
-      try {
-        const cs = await withTimeout(s.getCharacteristics(), 5000, s.uuid);
-        charMap.set(s.uuid, cs);
-      } catch { continue; }
+      try { charMap.set(s.uuid, await withTimeout(s.getCharacteristics(), 5000, s.uuid)); } catch { continue; }
     }
 
     const findSvc = (u: string) => { for (const [su] of charMap) if (uuidMatch(su, u)) return su; return null; };
-    const findChar = (su: string, s: string) => { const cs = charMap.get(su); if (!cs) return null; return cs.find(c => uuidMatch(c.uuid, s)) ?? null; };
+    const findChar = (su: string, s: string) => charMap.get(su)?.find(c => uuidMatch(c.uuid, s)) ?? null;
     const firstWW = (su: string) => charMap.get(su)?.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null;
     const firstN = (su: string) => charMap.get(su)?.find(c => c.properties.notify || c.properties.indicate) ?? null;
 
@@ -554,7 +327,6 @@ async function startConnect() {
     const aKey = derived.subarray(16, 32); const ctr = derived.subarray(32, 48);
     _sessionAesKey = aKey; _sessionCounter = ctr;
 
-    // Verify & confirm
     const vd = new Uint8Array(32); vd.set(pNonce); vd.set(bNonce, 16);
     const esig = (await hmacSha256(derived.subarray(0, 16), vd)).subarray(0, 16);
     log('info', `Sig match: ${hex(esig)} vs ${hex(sig)}`);
@@ -589,24 +361,6 @@ async function startConnect() {
 }
 
 // ═══════════════════════════════════════════
-// WIZARD SETUP
-// ═══════════════════════════════════════════
-
-function initWizard() {
-  const dropzone = document.getElementById('dropzone')!;
-  const fileInput = document.getElementById('file-input') as HTMLInputElement;
-
-  dropzone.onclick = () => fileInput.click();
-
-  dropzone.ondragover = (e) => { e.preventDefault(); dropzone.classList.add('dragover'); };
-  dropzone.ondragleave = () => dropzone.classList.remove('dragover');
-  dropzone.ondrop = (e) => { e.preventDefault(); dropzone.classList.remove('dragover');
-    if (e.dataTransfer?.files[0]) handleFile(e.dataTransfer.files[0]); };
-
-  fileInput.onchange = () => { if (fileInput.files?.[0]) handleFile(fileInput.files[0]); };
-}
-
-// ═══════════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════════
 
@@ -614,18 +368,9 @@ if (localStorage.getItem('be_ltk')) {
   showMainUI();
 } else {
   showWizard();
-  initWizard();
+  ltkInput.focus();
 }
 
-// Settings — anahtar sıfırlama
-document.getElementById('btn-settings')!.onclick = () => {
-  if (confirm('Güvenlik anahtarını sıfırlamak istediğinize emin misiniz?')) {
-    localStorage.removeItem('be_ltk');
-    location.reload();
-  }
-};
-
-// ── Button bindings ──
 btnConnect.onclick = startConnect;
 
 btnHrStart.onclick = async () => {

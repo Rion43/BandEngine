@@ -15,44 +15,31 @@
     <header style="display:flex;align-items:center;justify-content:space-between">
       <h1>BandEngine <small>Xiaomi Smart Band 9</small></h1>
       <div style="display:flex;align-items:center;gap:10px">
-        <span class="version-badge">v1.7</span>
+        <span class="version-badge" id="version-badge">v1.8</span>
         <button id="btn-settings" title="Ayarlar" style="padding:4px 8px;font-size:16px">⚙️</button>
       </div>
     </header>
 
-    <!-- ─── LTK Wizard (gizli, be_ltk yoksa gösterilir) ─── -->
+    <!-- ─── LTK Wizard (be_ltk yoksa) ─── -->
     <div id="wizard" style="display:none">
       <div class="panel wizard-card">
-        <h2>🔐 Güvenlik Anahtarı</h2>
-        <p class="wizard-desc">Band ile iletişim kurabilmek için Mi Fitness uygulamasından aldığınız log dosyasını seçin. İşlem tamamen tarayıcınızda yapılır, hiçbir veri gönderilmez.</p>
+        <h2>🔐 Güvenlik Anahtarı (LTK)</h2>
+        <p class="wizard-desc">Mi Fitness uygulamasından aldığınız <strong>encrypt_key</strong> değerini girin.</p>
 
-        <div class="wizard-platform">
-          <label class="wizard-option" id="opt-android">
-            <input type="radio" name="platform" value="android" checked>
-            <span>📱 Android — .zip (Mi Fitness log)</span>
-          </label>
-          <label class="wizard-option" id="opt-iphone">
-            <input type="radio" name="platform" value="iphone">
-            <span>🍏 iPhone — manifest.sqlite</span>
-          </label>
-        </div>
-
-        <div class="wizard-dropzone" id="dropzone">
-          <div class="dropzone-icon">📁</div>
-          <div class="dropzone-text">Dosyayı sürükle-bırak veya tıkla</div>
-          <div class="dropzone-hint" id="dropzone-hint">Android: MiFit_backup_*.zip | iPhone: manifest.sqlite</div>
-          <input type="file" id="file-input" hidden>
+        <div class="wizard-input-group">
+          <input type="text" id="ltk-input" class="wizard-input" placeholder="32 karakter hex (0-9, a-f)" maxlength="32" spellcheck="false">
+          <div class="wizard-counter"><span id="ltk-chars">0</span>/32</div>
         </div>
 
         <div class="wizard-status" id="wizard-status"></div>
 
-        <button class="primary" id="btn-connect-wizard" style="display:none;width:100%;padding:14px">
-          🔗 Band'a Bağlan
+        <button class="primary" id="btn-save-key" style="width:100%;padding:14px" disabled>
+          💾 Kaydet
         </button>
       </div>
     </div>
 
-    <!-- ─── Main UI (gizli, be_ltk varsa gösterilir) ─── -->
+    <!-- ─── Main UI (be_ltk varsa) ─── -->
     <div id="main-ui" style="display:none">
       <div id="status-bar" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <div id="status"><span class="dot" id="status-dot"></span><span id="status-text">Idle</span></div>

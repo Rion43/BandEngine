@@ -34,10 +34,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
-// ── UUID normalize ──
+// ── UUID normalize — her formatı normalize edip karşılaştır ──
 function uuidExpand(shortUuid: string): string {
-  const hex = shortUuid.replace(/^0x/i, '').toLowerCase();
-  return `0000${hex}-0000-1000-8000-00805f9b34fb`;
+  const h = shortUuid.replace(/^0x/i, '').toLowerCase();
+  if (h.length === 4) return `0000${h}-0000-1000-8000-00805f9b34fb`;
+  if (h.length === 8) return `${h}-0000-1000-8000-00805f9b34fb`;
+  return h; // zaten full UUID
+}
+
+/** Iki UUID'i (short/full/kvv) karşılaştır. */
+function uuidMatch(a: string, b: string): boolean {
+  const an = a.replace(/-/g, '').toLowerCase();
+  const bn = b.replace(/-/g, '').toLowerCase();
+  return an === bn || an.endsWith(bn) || bn.endsWith(an);
 }
 
 // ── Helpers ──
@@ -268,19 +277,17 @@ btnConnect.addEventListener('click', async () => {
     log('info', `═════ [STEP 5] CHAR DETECT ═════`);
 
     function findService(uuid: string): string | null {
-      const full = uuidExpand(uuid);
       for (const [svcUuid] of charMap) {
-        if (svcUuid.toLowerCase() === full) return svcUuid;
+        if (uuidMatch(svcUuid, uuid)) return svcUuid;
       }
       return null;
     }
 
     function findChar(serviceUuid: string, shortUuid: string): string | null {
-      const full = uuidExpand(shortUuid);
       const chars = charMap.get(serviceUuid);
       if (!chars) return null;
       for (const c of chars) {
-        if (c.uuid.toLowerCase() === full) return c.uuid;
+        if (uuidMatch(c.uuid, shortUuid)) return c.uuid;
       }
       return null;
     }
@@ -299,19 +306,31 @@ btnConnect.addEventListener('click', async () => {
     let writeUuid = '';
     let notifyUuid = '';
 
-    // ADAY 1: FE95 service (Mi Band 6+) → 0050 write, 005E/005F notify
+    // ADAY 1: FE95 service (Mi Band 6+)
+    //   0050 = read-only (band'dan gelen auth challenge)
+    //   005E = writeWithoutResponse + notify (ana veri kanalı)
+    //   005F = writeWithoutResponse + notify (ikincil)
     const fe95 = findService('fe95');
     if (fe95) {
-      log('info', `[STEP 5] FE95 servisi bulundu, characteristic aranıyor…`);
-      const w = findChar(fe95, '0050') || findFirstChar(fe95, p => p.includes('W') || p.includes('WW'));
-      const n = findChar(fe95, '005e') || findChar(fe95, '005f') || findFirstChar(fe95, p => p.includes('N') || p.includes('I'));
+      log('info', `[STEP 5] FE95 servisi bulundu`);
+      // Write: WW tercih edilir (005E veya 005F)
+      const w = findFirstChar(fe95, p => p.includes('WW') || p.includes('W'));
+      // Notify: aynı char veya ayrı
+      const n = findFirstChar(fe95, p => p.includes('N') || p.includes('I'));
       if (w && n) {
         svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
         writeUuid = w;
         notifyUuid = n;
-        log('info', `[STEP 5] FE95 kullanılacak: write=${w} notify=${n}`);
+        log('info', `[STEP 5] FE95: write=${w} notify=${n}`);
       } else {
-        log('warn', `[STEP 5] FE95'te uygun char pair bulunamadı (w=${w} n=${n})`);
+        log('warn', `[STEP 5] FE95'te uygun char yok (w=${w} n=${n})`);
+        // Fallback: 005E ve 005F zorla dene
+        if (findChar(fe95, '005e') && findChar(fe95, '005f')) {
+          svcForWrite = svcForNotify = allServices.find(s => s.uuid === fe95)!;
+          writeUuid = findChar(fe95, '005e')!;
+          notifyUuid = findChar(fe95, '005f')!;
+          log('info', `[STEP 5] FE95 fallback: write=${writeUuid} notify=${notifyUuid}`);
+        }
       }
     }
 

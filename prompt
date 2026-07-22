@@ -1,29 +1,40 @@
-Dur.
+Log hâlâ
 
-Artık AUTH paketini değiştirme.
+W:005F
+N:005E
 
-Bluetooth katmanı tamamen çalışıyor.
+gösteriyor.
 
-Sorun authentication protokolünde.
+Analizde ise denenmeyen kombinasyon olarak
 
-İnternette ve mevcut reverse engineering notlarında Xiaomi Smart Band 9 BLE authentication protokolünü araştır.
+W:005E
+N:005F
 
-Özellikle şunları doğrula:
+yazmıştın.
 
-- FE95 authentication flow
-- AUTH_INIT protobuf
-- opcode
-- nonce formatı
-- HKDF sırası
-- LongTermKey kaynağı
-- encryptKey gerçekten LTK mı?
-- Mi Fitness hangi characteristic'e yazıyor?
-- İlk notification nasıl görünüyor?
+Kontrol et:
 
-Elimizdeki implementasyonu bunlarla karşılaştır ve hangi noktanın uyuşmadığını raporla.
+1. Gerçekten build edilen kodda hangi characteristic kullanılıyor?
 
-Kod üretme.
+2. Eğer hâlâ W=005F ise neden?
 
-Tahmin yürütme.
+3. Hiçbir otomatik seçim yapma.
 
-Sadece gerçek referanslara dayanarak analiz yap.
+Geçici olarak zorla:
+
+Write = 005E
+Notify = 005F
+
+ve logda bunun gerçekten kullanıldığını göster.
+
+Logda şunu görmek istiyorum:
+
+W:005E
+N:005F
+
+Eğer yine
+
+W:005F
+N:005E
+
+çıkıyorsa build doğru uygulanmamıştır.

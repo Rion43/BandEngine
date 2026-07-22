@@ -1,7 +1,7 @@
 import './style.css';
 import { log, hex } from './logger.js';
 
-const VERSION = '2.6';
+const VERSION = '2.7';
 
 const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
   HEART_RATE_SUBSCRIBE: 69, HEART_RATE_UNSUBSCRIBE: 70, BATTERY_INFO: 12,
@@ -221,7 +221,7 @@ async function startConnect() {
     const fe95 = findSvc('fe95');
     if (fe95) {
       const char5e = findChar(fe95, '005e'); const char5f = findChar(fe95, '005f');
-      if (char5e && char5f) { wc = char5f; nc = char5e; }
+      if (char5e && char5f) { wc = char5e; nc = char5f; }
       else if (char5e) { wc = char5e; nc = char5e; }
       else if (char5f) { wc = char5f; nc = char5f; }
     }

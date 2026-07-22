@@ -5,10 +5,10 @@ import { log, hex } from './logger.js';
 // SÜRÜM — bu dosyadaki tek kaynak
 // package.json, badge, hep buradan okunur
 // ═══════════════════════════════════════════
-const VERSION = '2.0';
+const VERSION = '2.1';
 
 // ═══════════════════════════════════════════
-// CONSTANTS (RE: Mi Fitness protocol)
+// CONSTANTS
 // ═══════════════════════════════════════════
 const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
   HEART_RATE_SUBSCRIBE: 69, HEART_RATE_UNSUBSCRIBE: 70,
@@ -17,7 +17,7 @@ const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
 const CATEGORIES = { SYSTEM: 1, HEALTH: 2, ACTIVITY: 3, NOTIFICATION: 4, DEVICE: 5 };
 
 // ═══════════════════════════════════════════
-// CRYPTO (RE: Session.ts, AESCTR.ts, HKDF.ts)
+// CRYPTO
 // ═══════════════════════════════════════════
 async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
   const k = await crypto.subtle.importKey('raw', key as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -44,7 +44,7 @@ async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array, counter: Uint8Ar
 }
 
 // ═══════════════════════════════════════════
-// PROTOCOL HELPERS (RE: PacketEncoder.ts)
+// PROTOCOL HELPERS
 // ═══════════════════════════════════════════
 function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
   const out = new Uint8Array(2 + nonce.length);
@@ -202,12 +202,17 @@ function addHrSample(bpm: number) {
 
 async function writeBLE(data: Uint8Array) {
   if (!writeChar) throw new Error('writeChar not ready');
-  log('sent', `→ ${hex(data)}`);
+  // FE95 protokolü: 005E'ye yazarken başa 2-byte uzunluk (LE) eklenir
+  const frame = new Uint8Array(2 + data.length);
+  frame[0] = data.length & 0xff;
+  frame[1] = (data.length >> 8) & 0xff;
+  frame.set(data, 2);
+  log('sent', `→ ${hex(data)} (frame=${hex(frame)})`);
   if (writeChar.properties.writeWithoutResponse) {
     // @ts-ignore
-    await writeChar.writeValueWithoutResponse(data);
+    await writeChar.writeValueWithoutResponse(frame);
   } else {
-    await writeChar.writeValue(data as any);
+    await writeChar.writeValue(frame as any);
   }
 }
 
@@ -297,29 +302,28 @@ async function startConnect() {
     let wc: BluetoothRemoteGATTCharacteristic | null = null, nc: BluetoothRemoteGATTCharacteristic | null = null;
     const fe95 = findSvc('fe95');
     if (fe95) {
-      log('info', `FE95 char strategy: testing combinations`);
+      log('info', `FE95 found`);
 
-      // Önce 0050'den auth state oku
       const char50 = findChar(fe95, '0050');
-      if (char50 && char50.properties.read) {
-        try {
-          const v = await withTimeout(char50.readValue(), 3000, 'read0050');
-          log('info', `0050 state: ${hex(new Uint8Array(v.buffer))}`);
-        } catch (e: any) { log('warn', `0050 read fail: ${e.message}`); }
-      }
-
-      // ADAY A: write 005E, notify 005E (ikisi de ayni char)
       const char5e = findChar(fe95, '005e');
-      // ADAY B: write 005F, notify 005F
       const char5f = findChar(fe95, '005f');
 
-      // Önce 005E dene
-      if (char5e) {
+      // 0050'den auth state oku
+      if (char50?.properties.read) {
+        try { log('info', `0050: ${hex(new Uint8Array((await withTimeout(char50.readValue(), 2000, 'r50')).buffer))}`); }
+        catch { log('info', `0050: unavailable`); }
+      }
+
+      // Mi Band 9 FE95: write 005E → notify 005F
+      if (char5e && char5f) {
+        wc = char5e; nc = char5f;
+        log('info', `use: W=005E N=005F`);
+      } else if (char5e) {
         wc = char5e; nc = char5e;
-        log('info', `Trying: write=005E notify=005E`);
+        log('info', `use: W=005E N=005E (fallback)`);
       } else if (char5f) {
         wc = char5f; nc = char5f;
-        log('info', `Trying: write=005F notify=005F`);
+        log('info', `use: W=005F N=005F (fallback)`);
       }
     }
     if (!wc || !nc) { const f = findSvc('fee0'); if (f) { wc = findChar(f, 'fee1'); nc = findChar(f, 'fee2'); } }

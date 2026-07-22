@@ -1,6 +1,6 @@
 {
   "name": "band-engine",
-  "version": "2.0.0",
+  "version": "1.7.0",
   "description": "Xiaomi Smart Band 9 BLE protocol library",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

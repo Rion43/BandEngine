@@ -380,11 +380,17 @@ btnConnect.addEventListener('click', async () => {
     log('info', `  Notify char: ${notifyUuid}`);
 
     try {
-      writeChar = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 5000, 'getChar(write)');
-      notifyChar = await withTimeout(svcForNotify!.getCharacteristic(notifyUuid), 5000, 'getChar(notify)');
-      log('info', `[STEP 6] writeChar alındı`);
+      // Aynı UUID hem write hem notify ise tek çağrı yap
+      if (writeUuid === notifyUuid && svcForWrite === svcForNotify) {
+        const c = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 10000, 'getChar(write+notify)');
+        writeChar = c;
+        notifyChar = c;
+        log('info', `[STEP 6] write+notify aynı char: ${c.uuid}`);
+      } else {
+        writeChar = await withTimeout(svcForWrite.getCharacteristic(writeUuid), 10000, 'getChar(write)');
+        notifyChar = await withTimeout(svcForNotify!.getCharacteristic(notifyUuid), 10000, 'getChar(notify)');
+      }
       log('info', `  write: ${writeChar.properties.write}, writeWithoutResp: ${writeChar.properties.writeWithoutResponse}`);
-      log('info', `[STEP 6] notifyChar alındı`);
       log('info', `  notify: ${notifyChar.properties.notify}, indicate: ${notifyChar.properties.indicate}`);
     } catch (errC: any) {
       log('error', `[STEP 6] getCharacteristic HATA: ${errC.message}`);

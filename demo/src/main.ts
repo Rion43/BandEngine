@@ -17,59 +17,91 @@ function showMainUI() {
   document.getElementById('main-ui')!.style.display = '';
 }
 
+// ── SQLite WASM yükleyici (3 fallback, tüm ortamlar) ──
+const SQLITE_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0';
+
+let _SQL: any = null;
+async function getSQL(): Promise<any> {
+  if (_SQL) return _SQL;
+
+  // Fallback 1: locateFile ile CDN
+  const errors: string[] = [];
+  for (const base of [SQLITE_CDN, 'https://unpkg.com/sql.js@1.11.0/dist', 'https://cdn.jsdelivr.net/npm/sql.js@1.11.0/dist']) {
+    try {
+      _SQL = await initSqlJs({
+        locateFile: (f: string) => `${base}/${f}`,
+      });
+      return _SQL;
+    } catch (e: any) {
+      errors.push(`${base}: ${e.message}`);
+    }
+  }
+
+  // Fallback 2: WASM olmadan çalıştır (bazı browser'lar destekler)
+  try {
+    _SQL = await initSqlJs({ locateFile: () => '' });
+    return _SQL;
+  } catch {}
+
+  throw new Error(`SQLite yuklenemedi (3 CDN denendi): ${errors.join(' | ')}`);
+}
+
+// ── LTK çıkarıcı (tüm DB şemalarını dene) ──
 async function extractKeyFromDB(buffer: ArrayBuffer): Promise<string | null> {
-  const SQL = await initSqlJs({
-    locateFile: (file: string) => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.11.0/${file}`,
-  });
+  const SQL = await getSQL();
   const db = new SQL.Database(new Uint8Array(buffer));
 
-  // device_key tablosu, auth_key sütunu
+  // Tüm tablo+sütun isimlerini al
   const tables: any[] = db.exec("SELECT name FROM sqlite_master WHERE type='table'");
-  const tableNames = tables.flatMap(t => t.values.map((v: string) => v));
+  const tableNames = tables.flatMap(t => t.values.map((v: any) => v));
 
-  // device_key veya benzeri tabloları ara
-  const targetTable = tableNames.find((n: string) =>
-    n.toLowerCase().includes('device_key') || n.toLowerCase().includes('devicekey')
+  // Önce device_key tablosunu dene
+  const target = tableNames.find((n: string) =>
+    /device_key|devicekey|keychain|secure_key/i.test(n)
   );
+  if (target) {
+    const info: any[] = db.exec(`PRAGMA table_info(${target})`);
+    const cols = info[0]?.values.map((v: any) => v[1]) ?? [];
+    const keyCol = cols.find((c: string) => /auth_key|encrypt_key|key_value|value|ltk/i.test(c));
+    if (keyCol) {
+      const rows: any[] = db.exec(`SELECT ${keyCol} FROM ${target} LIMIT 10`);
+      for (const r of rows) {
+        const v = r.values[0]?.[0];
+        if (typeof v === 'string' && /^[0-9a-f]{32}$/i.test(v)) { db.close(); return v; }
+        if (v instanceof Uint8Array) {
+          const h = Array.from(v).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+          if (h.length === 32) { db.close(); return h; }
+        }
+      }
+    }
+  }
 
-  if (!targetTable) {
-    // fallback: tüm tabloları tara
-    for (const tname of tableNames) {
-      try {
-        const cols = db.exec(`PRAGMA table_info(${tname})`);
-        const colNames = cols[0]?.values.map((v: any) => v[1]) ?? [];
-        if (colNames.some((c: string) => /auth_key|encrypt_key|ltk/i.test(c))) {
-          const rows = db.exec(`SELECT * FROM ${tname} LIMIT 10`);
-          for (const row of rows) {
-            for (const val of row.values[0]) {
-              if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val;
-            }
+  // Fallback: tüm tablolardaki 32 char hex değerleri ara
+  for (const t of tableNames) {
+    try {
+      const info: any[] = db.exec(`PRAGMA table_info(${t})`);
+      const cnames = info[0]?.values.map((v: any) => v[1]) ?? [];
+      if (!cnames.some((c: string) => /auth|key|encrypt|secure/i.test(c))) continue;
+      const rows: any[] = db.exec(`SELECT * FROM ${t} LIMIT 20`);
+      for (const row of rows) {
+        for (const val of row.values) {
+          if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) { db.close(); return val; }
+          if (val instanceof Uint8Array) {
+            const h = Array.from(val).map((b: number) => b.toString(16).padStart(2, '0')).join('');
+            if (h.length === 32) { db.close(); return h; }
           }
         }
-      } catch {}
-    }
-    return null;
+      }
+    } catch {}
   }
-
-  // device_key tablosundan auth_key oku
-  const rows = db.exec(`SELECT auth_key FROM ${targetTable} LIMIT 10`);
-  for (const row of rows) {
-    const val = row.values[0]?.[0];
-    if (typeof val === 'string' && /^[0-9a-f]{32}$/i.test(val)) return val;
-    if (val instanceof Uint8Array) {
-      const hex = Array.from(val).map(b => b.toString(16).padStart(2, '0')).join('');
-      if (hex.length === 32) return hex;
-    }
-  }
+  db.close();
   return null;
 }
 
 async function detectFileType(buffer: ArrayBuffer): Promise<'zip' | 'sqlite' | null> {
-  const header = new Uint8Array(buffer.slice(0, 16));
-  const hex = Array.from(header).map(b => b.toString(16).padStart(2, '0')).join('');
-  // ZIP: PK\x03\x04
+  const h = new Uint8Array(buffer.slice(0, 16));
+  const hex = Array.from(h).map(b => b.toString(16).padStart(2, '0')).join('');
   if (hex.startsWith('504b0304')) return 'zip';
-  // SQLite: SQLite format 3\x00
   if (hex.startsWith('53514c697465')) return 'sqlite';
   return null;
 }
@@ -77,8 +109,11 @@ async function detectFileType(buffer: ArrayBuffer): Promise<'zip' | 'sqlite' | n
 async function handleFile(file: File) {
   const ws = document.getElementById('wizard-status')!;
   ws.className = 'wizard-status loading';
-  ws.textContent = '⏳ Dosya işleniyor…';
+  ws.innerHTML = '⏳ Dosya işleniyor…';
   ws.style.display = 'block';
+
+  // Butonu gizle (tekrar tıklanırsa yeniden başlasın)
+  document.getElementById('btn-connect-wizard')!.style.display = 'none';
 
   try {
     const buffer = await file.arrayBuffer();
@@ -89,20 +124,20 @@ async function handleFile(file: File) {
 
     if (fileType === 'zip') {
       const zip = await JSZip.loadAsync(buffer);
-      let dbFile = zip.file(/manifest\.sqlite/i)[0] ||
-                   zip.file(/\.db$/i)[0] ||
-                   zip.file(/device_key/i)[0];
-      if (!dbFile) {
-        const allFiles = Object.keys(zip.files).filter(f =>
-          /\.(sqlite|db)$/i.test(f) || /device/i.test(f) || /auth/i.test(f)
-        );
-        if (allFiles.length === 0) throw new Error('ZIP içinde SQLite dosyası bulunamadı');
-        dbFile = zip.file(allFiles[0]);
+      const candidates = ['manifest.sqlite', 'manifest.db', 'device_key.db', 'mi_fit.db'];
+      let dbFile: any = null;
+      for (const name of candidates) {
+        dbFile = zip.file(new RegExp(name, 'i'))[0];
+        if (dbFile) break;
       }
-      const dbData = await dbFile.async('arraybuffer');
-      key = await extractKeyFromDB(dbData);
+      if (!dbFile) {
+        // Tüm .sqlite/.db dosyalarını tara
+        const all = Object.keys(zip.files).filter(f => /\.(sqlite|db)$/i.test(f));
+        if (all.length === 0) throw new Error('ZIP içinde SQLite veritabanı bulunamadı.');
+        dbFile = zip.file(all[0]);
+      }
+      key = await extractKeyFromDB(await dbFile.async('arraybuffer'));
     } else {
-      // .sqlite — direkt oku
       key = await extractKeyFromDB(buffer);
     }
 

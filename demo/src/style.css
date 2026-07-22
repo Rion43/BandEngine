@@ -157,6 +157,42 @@ button.danger:hover:not(:disabled) { background: #450a0a; }
 }
 #hr-chart .bar.latest { opacity: 1; }
 
+/* ── Wizard ── */
+.wizard-card { text-align: center; padding: 32px 20px; }
+.wizard-card h2 { font-size: 18px; text-transform: none; letter-spacing: -.01em; color: var(--text); margin-bottom: 8px; }
+.wizard-desc { font-size: 13px; color: var(--text-dim); line-height: 1.5; margin-bottom: 20px; }
+
+.wizard-platform { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.wizard-option {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 14px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--surface2);
+  cursor: pointer; font-size: 13px; text-align: left;
+  transition: border-color .15s;
+}
+.wizard-option:has(input:checked) { border-color: var(--accent); }
+.wizard-option input { accent-color: var(--accent); }
+
+.wizard-dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 12px; padding: 32px 20px;
+  cursor: pointer; transition: border-color .2s, background .2s;
+  margin-bottom: 16px;
+}
+.wizard-dropzone:hover, .wizard-dropzone.dragover { border-color: var(--accent); background: #24283988; }
+.dropzone-icon { font-size: 36px; margin-bottom: 8px; }
+.dropzone-text { font-size: 14px; font-weight: 500; color: var(--text); }
+.dropzone-hint { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
+
+.wizard-status {
+  font-size: 13px; padding: 10px; border-radius: 8px;
+  margin-bottom: 16px; display: none;
+}
+.wizard-status.success { display: block; background: #064e3b; color: #6ee7b7; border: 1px solid #065f46; }
+.wizard-status.error { display: block; background: #450a0a; color: #fca5a5; border: 1px solid #7f1d1d; }
+.wizard-status.loading { display: block; background: #1e1b4b; color: #a5b4fc; border: 1px solid #3730a3; }
+.wizard-status .check { font-size: 28px; display: block; margin-bottom: 4px; }
+
 /* ── Log ── */
 #log {
   max-height: 280px;

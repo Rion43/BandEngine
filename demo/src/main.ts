@@ -235,11 +235,51 @@ async function startConnect() {
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
 
-    const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
-    const chars = await withTimeout(service.getCharacteristics(), 5000, 'chars');
-    const char5e = chars.find(c => c.uuid.includes('005e'));
-    const char5f = chars.find(c => c.uuid.includes('005f'));
-    if (!char5e || !char5f) throw new Error('005E/005F not found');
+    // Try FE95 service first, fallback to all services
+    let foundW: BluetoothRemoteGATTCharacteristic | null = null;
+    let foundN: BluetoothRemoteGATTCharacteristic | null = null;
+
+    try {
+      const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
+      const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
+      log('info', `FE95 chars (${chars.length}):`);
+      for (const c of chars) log('info', `  ${c.uuid} (R=${!!c.properties.read} W=${!!c.properties.write} WW=${!!c.properties.writeWithoutResponse} N=${!!c.properties.notify})`);
+
+      const matchUuid = (c: BluetoothRemoteGATTCharacteristic, short: string) =>
+        c.uuid.replace(/-/g, '').toLowerCase().includes(short.toLowerCase());
+
+      foundN = chars.find(c => c.properties.notify && matchUuid(c, '005e')) ?? null;
+      foundW = chars.find(c => (c.properties.write || c.properties.writeWithoutResponse) && matchUuid(c, '005f')) ?? null;
+
+      if (!foundN || !foundW) {
+        const ww = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+        const nf = chars.find(c => c.properties.notify);
+        log('warn', `005E/005F not found — fallback W=${ww?.uuid ?? '?'} N=${nf?.uuid ?? '?'}`);
+        foundW = foundW ?? ww ?? null;
+        foundN = foundN ?? nf ?? null;
+      }
+    } catch (e: any) {
+      log('warn', `FE95 failed: ${e.message}, scanning all services...`);
+    }
+
+    // Fallback: scan ALL services
+    if (!foundW || !foundN) {
+      const allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'all-svcs');
+      log('info', `Scanning ${allSvcs.length} services...`);
+      for (const svc of allSvcs) {
+        try {
+          const sc = await withTimeout(svc.getCharacteristics(), 3000, svc.uuid);
+          const ww = sc.find(c => c.properties.writeWithoutResponse || c.properties.write);
+          const nf = sc.find(c => c.properties.notify);
+          log('info', `  ${svc.uuid}: ${sc.length} chars${ww ? ' W' : ''}${nf ? ' N' : ''}`);
+          if (ww && nf && !foundW && !foundN) { foundW = ww; foundN = nf; }
+        } catch { }
+      }
+    }
+
+    if (!foundW || !foundN) throw new Error('No writable/notifiable char pair found');
+    writeChar = foundW; notifyChar = foundN;
+    log('info', `Using W=${writeChar.uuid} N=${notifyChar.uuid}`);
 
     writeChar = char5f; notifyChar = char5e;
     log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);

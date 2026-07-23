@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.6-plaintext-test';
+const VERSION = '5.9-full-clock-deviceinfo';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -65,6 +65,7 @@ function processSpp() {
     }
     const size = SppPacketV2.getExpectedPacketSize(sppBuffer);
     if (size === null || sppBuffer.length < size) return;
+
     const bytes = sppBuffer.slice(0, size);
     sppBuffer = sppBuffer.slice(size);
     const pkt = SppPacketV2.decode(bytes);
@@ -96,10 +97,12 @@ function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
     }
 
     case SppPacketType.DATA: {
+      // Send ACK immediately
       writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
       const ch = SppChannel[pkt.channel ?? -1] ?? '?';
       log('recv', `DATA ch=${ch} op=${SppDataOpcode[pkt.opcode ?? 0]} payload(${pkt.payload.length}B)`);
 
+      // Route to auth handler if waiting
       if (pkt.payload.length > 0 && authResolve) {
         authResolve(pkt.payload);
         authResolve = null;
@@ -231,29 +234,16 @@ async function startConnect() {
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
 
-    // Find characteristics more robustly
-    let foundW: BluetoothRemoteGATTCharacteristic | null = null;
-    let foundN: BluetoothRemoteGATTCharacteristic | null = null;
-    try {
-      const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
-      const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
-      log('info', `FE95 chars (${chars.length}):`);
-      for (const c of chars) log('info', `  ${c.uuid} (R=${!!c.properties.read} W=${!!c.properties.write} WW=${!!c.properties.writeWithoutResponse} N=${!!c.properties.notify})`);
+    const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
+    const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
+    const char5e = chars.find(c => c.uuid.includes('005e'));
+    const char5f = chars.find(c => c.uuid.includes('005f'));
+    if (!char5e || !char5f) throw new Error('005E/005F not found');
 
-      const matchUuid = (c: BluetoothRemoteGATTCharacteristic, short: string) =>
-        c.uuid.replace(/-/g, '').toLowerCase().includes(short.toLowerCase());
-
-      foundN = chars.find(c => c.properties.notify && matchUuid(c, '005e')) ?? null;
-      foundW = chars.find(c => (c.properties.write || c.properties.writeWithoutResponse) && matchUuid(c, '005f')) ?? null;
-      if (!foundN || !foundW) { foundW = foundW ?? chars.find(c => c.properties.write || c.properties.writeWithoutResponse) ?? null; foundN = foundN ?? chars.find(c => c.properties.notify) ?? null; }
-    } catch (e: any) {
-      log('warn', `FE95 failed: ${e.message}, scanning all...`);
-      const allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'all-svcs');
-      for (const svc of allSvcs) { try { const sc = await withTimeout(svc.getCharacteristics(), 3000, svc.uuid); foundW = foundW ?? sc.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null; foundN = foundN ?? sc.find(c => c.properties.notify) ?? null; } catch {} }
-    }
-    if (!foundW || !foundN) throw new Error('No writable/notifiable char pair found');
-    writeChar = foundW; notifyChar = foundN;
+    writeChar = char5f;
+    notifyChar = char5e;
     log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
+    log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse} N=${!!writeChar.properties.notify}`);
 
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
@@ -263,7 +253,7 @@ async function startConnect() {
     log('info', '═══ 1. SESSION CONFIG ═══');
     SppPacketV2.resetSequence();
     await writeBLE(SppPacketV2.buildSessionConfigRequest());
-    setStatus('Session Config sent…');
+    setStatus('Waiting for Session Config…');
     await drainNotifications(15000);
     await new Promise(r => setTimeout(r, 500));
 
@@ -279,6 +269,7 @@ async function startConnect() {
     const { nonce: pNonce, packet: pnPacket } = authProtocol.buildPhoneNonce();
     log('info', `PhoneNonce: ${toHex(pNonce)}`);
 
+    // Wrap in SPPv2 DATA(AUTHENTICATION, PLAINTEXT)
     const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
     log('sent', `PhoneNonce DATA (${sppPn.length}B): ${hexLog(sppPn)}`);
     const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'WatchNonce');
@@ -314,18 +305,52 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      log("info", "═══ POST-AUTH: DEVICE INFO (PLAINTEXT TEST) ═══");
+      // ═══ POST-AUTH: GADGETBRIDGE SIRAYLA (Clock -> DeviceInfo) ═══
+      log('info', '═══ POST-AUTH: CLOCK + DEVICE INFO (ENCRYPTED) ═══');
       try {
+        // 1. Önce Clock (Gadgetbridge setCurrentTime gibi) - ENCRYPTED
+        const now = new Date();
+        const clockCmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]); // type=2, subtype=3 (CMD_CLOCK=3)
+        log('info', `Clock cmd: ${toHex(clockCmd)}`);
+        const encClock = await authProtocol!.encryptV2(clockCmd);
+        const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, clockCmd);
+        log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
+        await writeBLE(sppClock);
+
+        await new Promise(r => setTimeout(r, 3000));
+
+        // Cevap kontrol et
+        let count = 0;
+        while (true) {
+          try {
+            const n = await withTimeout(waitOneNotification(3000), 3000, 'clock-resp');
+            log('recv', `Clock resp (${n.length}B): ${hexLog(n)}`);
+            const decoded = SppPacketV2.decode(n);
+            if (decoded && decoded.packetType === SppPacketType.DATA && decoded.payload.length >= 2) {
+              if (decoded.opcode === SppDataOpcode.SEND_ENCRYPTED && authProtocol?.keys) {
+                try { const dec = await authProtocol!.decryptV2(decoded.payload.slice(2)); log('info', `  -> DECRYPTED: ${toHex(dec)}`); }
+                catch(e:any) { log('warn', `  Decrypt fail: ${e.message}`); }
+              }
+            }
+            feedSpp(n);
+          } catch { break; }
+        }
+
+        // 2. Device Info (encrypted)
+        log('info', '═══ DEVICE INFO (ENCRYPTED) ═══');
         const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
-        log("info", "DeviceInfo cmd: " + toHex(cmd));
-        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_PLAINTEXT, cmd);
-        log("sent", "SPPv2 plain (${spp.length}B): " + hexLog(spp));
+        log('info', `DeviceInfo cmd: ${toHex(cmd)}`);
+        const enc = await authProtocol!.encryptV2(clockCmd);
+        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+        log('sent', `DeviceInfo SPPv2 (${spp.length}B): ${hexLog(spp)}`);
         await writeBLE(spp);
+
         await new Promise(r => setTimeout(r, 5000));
-        log("info", "Queue: " + notifyQueue.length + ", SPP buf: " + sppBuffer.length + "B");
-        for (let i = 0; i < notifyQueue.length; i++) { log("recv", "Q[" + i + "]: " + hexLog(notifyQueue[i])); }
-        if (sppBuffer.length > 0) { log("info", "SPPbuf: " + hexLog(sppBuffer)); }
-      } catch (be: any) { log("error", "Post: " + (be?.message ?? be)); }
+        log('info', `Queue: ${notifyQueue.length}, SPP buf: ${sppBuffer.length}B`);
+        for (let i = 0; i < notifyQueue.length; i++) { log('recv', `Q[${i}]: ${hexLog(notifyQueue[i])}`); }
+        if (sppBuffer.length > 0) { log('info', `SPPbuf: ${hexLog(sppBuffer)}`); }
+      } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
+    } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);
     }
@@ -350,3 +375,7 @@ btnDisconnect.onclick = () => {
 
 if (localStorage.getItem('be_ltk')) { showMainUI(); } else { showWizard(); ltkInput.focus(); }
 btnConnect.onclick = startConnect;
+
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+}

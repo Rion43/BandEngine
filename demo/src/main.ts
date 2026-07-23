@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.6-webcrypto-ctr';
+const VERSION = '5.6-plaintext-test';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -314,20 +314,18 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      log("info", "═══ POST-AUTH: ENCRYPTED DEVICE INFO ═══");
+      log("info", "═══ POST-AUTH: DEVICE INFO (PLAINTEXT TEST) ═══");
       try {
         const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
         log("info", "DeviceInfo cmd: " + toHex(cmd));
-        const enc = await authProtocol!.encryptV2(cmd);
-        log("info", "Encrypted: " + toHex(enc));
-        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-        log("sent", "SPPv2 (" + spp.length + "B): " + hexLog(spp));
+        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_PLAINTEXT, cmd);
+        log("sent", "SPPv2 plain (${spp.length}B): " + hexLog(spp));
         await writeBLE(spp);
         await new Promise(r => setTimeout(r, 5000));
         log("info", "Queue: " + notifyQueue.length + ", SPP buf: " + sppBuffer.length + "B");
-        for (let i = 0; i < notifyQueue.length; i++) { log("recv", "Q[" + i + "](" + notifyQueue[i].length + "B): " + hexLog(notifyQueue[i])); }
+        for (let i = 0; i < notifyQueue.length; i++) { log("recv", "Q[" + i + "]: " + hexLog(notifyQueue[i])); }
+        if (sppBuffer.length > 0) { log("info", "SPPbuf: " + hexLog(sppBuffer)); }
       } catch (be: any) { log("error", "Post: " + (be?.message ?? be)); }
-    } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);
     }

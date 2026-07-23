@@ -342,32 +342,11 @@ async function startConnect() {
         log('info', `DeviceInfo cmd: ${toHex(cmd)}`);
         const enc = await authProtocol!.encryptV2(clockCmd);
         const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-        log('sent', `DeviceInfo SPPv2 (${spp.length}B): ${hexLog(spp)}`);
-        await writeBLE(spp);
-
-        await new Promise(r => setTimeout(r, 5000));
-        log('info', `Queue: ${notifyQueue.length}, SPP buf: ${sppBuffer.length}B`);
-        for (let i = 0; i < notifyQueue.length; i++) { log('recv', `Q[${i}]: ${hexLog(notifyQueue[i])}`); }
-        if (sppBuffer.length > 0) { log('info', `SPPbuf: ${hexLog(sppBuffer)}`); }
-      } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
+      } catch (be: any) { log("error", "Post-auth: " + (be?.message ?? be)); }
     } else {
-      log('error', '✗  AUTH FAILED');
-      setStatus('✗ Auth failed', false);
+      log("error", "✗  AUTH FAILED");
+      setStatus("✗ Auth failed", false);
     }
-
-    log('info', '═══ FULL AUTH FLOW DONE ═══');
-    btnConnect.disabled = false;
-
-  } catch (e: any) {
-    log('error', `❌ HATA: ${e?.message ?? e}`);
-    setStatus('Error', false);
-    btnConnect.disabled = false;
-  }
-}
-
-btnDisconnect.onclick = () => {
-  gattServer?.disconnect();
-  gattServer = null; writeChar = null; notifyChar = null;
   authProtocol = null;
   sppBuffer = new Uint8Array(); ackTracker.reset();
   setButtons(false); setStatus('Disconnected');

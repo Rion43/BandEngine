@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '4.5-post-auth';
+const VERSION = '4.6-clock-gadgetbridge';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -342,44 +342,29 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ AUTH SONRASI: Battery Request (CMD_BATTERY=1, type=2) ═══
-      log('info', '═══ POST-AUTH: SEND BATTERY REQUEST ═══');
+      // ═══ AUTH SONRASI (Gadgetbridge sırasıyla) ═══
+      log('info', '═══ POST-AUTH: SET CURRENT TIME ═══');
       try {
-        // Gadgetbridge: sendCommand("get battery state", 2, 1)
-        // Protobuf: Command{type=2, subtype=1} (System field yok)
-        const batteryCmd = new Uint8Array([0x08, 0x02, 0x10, 0x01]);
-        log('info', `Battery command protobuf (${batteryCmd.length}B): ${toHex(batteryCmd)}`);
-
-        // Encrypt with auth session key (AES-CTR, key-as-IV)
-        const encrypted = await authProtocol!.encryptV2(batteryCmd);
-        log('info', `Encrypted (${encrypted.length}B): ${toHex(encrypted)}`);
-
-        // Send as SPPv2 DATA with SEND_ENCRYPTED opcode (sendAndWaitAuth handles write)
-        const sppPkt = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encrypted);
-        log('sent', `Battery request SPPv2 DATA (${sppPkt.length}B): ${hexLog(sppPkt)}`);
-        const batteryResponse = await sendAndWaitAuth(sppPkt, 8000, 'Battery');
-        if (batteryResponse) {
-          log('recv', `Battery response (${batteryResponse.length}B): ${toHex(batteryResponse)}`);
-
-          // Try to decrypt
-          try {
-            const decrypted = await authProtocol!.decryptV2(batteryResponse);
-            log('info', `Decrypted response (${decrypted.length}B): ${toHex(decrypted)}`);
-
-            // Parse battery level from protobuf: System{Power{Battery{level}}}
-            // Simple parse: find varint field after 0x0a patterns
-            if (decrypted.length >= 2) {
-              log('info', `📊 Battery raw: ${toHex(decrypted)}`);
-            }
-          } catch (de: any) {
-            log('warn', `Decrypt failed: ${de.message}`);
-          }
+        // Gadgetbridge: systemService.setCurrentTime() ilk cagri
+        // Command{type=2, subtype=3, system{clock{time{hour,min,sec,ms},date{year,month,day},tz,isNot24Hour}}}
+        // Once minimal command dene (sadece type+subtype)
+        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]);
+        log('info', `Clock cmd (${cmd.length}B): ${toHex(cmd)}`);
+        const enc = await authProtocol!.encryptV2(cmd);
+        log('info', `Encrypted (${enc.length}B): ${toHex(enc)}`);
+        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+        log('sent', `Clock SPPv2 (${spp.length}B): ${hexLog(spp)}`);
+        const resp = await sendAndWaitAuth(spp, 8000, 'Clock');
+        if (resp) {
+          log('recv', `Clock response (${resp.length}B): ${toHex(resp)}`);
+          try { const dec = await authProtocol!.decryptV2(resp); log('info', `Decrypted (${dec.length}B): ${toHex(dec)}`); }
+          catch(e:any) { log('warn', `Decrypt: ${e.message}`); }
         } else {
-          log('warn', 'No battery response (timeout)');
+          log('warn', 'No clock response');
+          // SURE: async/await sırası düzgün, ama authResolve race var mı?
+          // sendAndWaitAuth önce handler kurar, sonra write yapar. ✓
         }
-      } catch (be: any) {
-        log('error', `Battery request error: ${be?.message ?? be}`);
-      }
+      } catch (be: any) { log('error', `Post-auth err: ${be?.message ?? be}`); }
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

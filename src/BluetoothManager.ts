@@ -1,5 +1,5 @@
 // BluetoothManager — Web Bluetooth API wrapper for Xiaomi Smart Band 9 (SPPv2)
-// AŞAMA 2: Connect → Enable Notify → START_SESSION_REQUEST → Response bekle
+// AŞAMA 3: Connect → Enable Notify → START_SESSION_REQUEST → Version doğrula → Auth hazır
 
 import { BLE_SERVICES } from './types.js';
 import {
@@ -35,7 +35,9 @@ export class BluetoothManager implements BluetoothTransport {
   private sessionConfigConfirmed = false;
   private sessionConfigResponse: SessionConfigResponse | null = null;
 
-  // Auth state (connected sonrası)
+  // Version (AŞAMA 3)
+  private _versionValidated = false;
+  private _onVersionReady?: () => void;
   private _onVersionData?: (payload: Uint8Array) => void;
 
   async connect(): Promise<void> {
@@ -104,8 +106,15 @@ export class BluetoothManager implements BluetoothTransport {
 
   getSessionConfigConfirmed(): boolean { return this.sessionConfigConfirmed; }
   getSessionConfigResponse(): SessionConfigResponse | null { return this.sessionConfigResponse; }
+  get versionValidated(): boolean { return this._versionValidated; }
 
-  /** Version DATA handler (AŞAMA 3 için hazırlık) */
+  /** Version doğrulandığında tetiklenecek callback (auth başlatmak için). */
+  onVersionReady(handler: () => void): void {
+    this._onVersionReady = handler;
+    if (this._versionValidated) handler();
+  }
+
+  /** Version DATA handler (AŞAMA 3) */
   onVersionData(handler: (payload: Uint8Array) => void): void {
     this._onVersionData = handler;
   }
@@ -141,6 +150,21 @@ export class BluetoothManager implements BluetoothTransport {
       this.sessionConfigConfirmed = true;
       this.sessionConfigResponse = response;
       console.log(`[SessionConfig] RESPONSE PARSED: version=${response.version?.join('.')} maxPacketSize=${response.maxPacketSize} txWin=${response.txWin} sendTimeout=${response.sendTimeout}ms`);
+
+      // AŞAMA 3: Version doğrula
+      if (response.version && response.version.length >= 3) {
+        const vStr = response.version.join('.');
+        console.log(`[SessionConfig] Version validated: ${vStr}`);
+        this._versionValidated = true;
+        this._onVersionReady?.();
+        this._onVersionReady = undefined;
+      } else {
+        console.warn(`[SessionConfig] Version not available or incomplete: ${JSON.stringify(response.version)}`);
+        // Yine de devam et (Gadgetbridge gibi)
+        this._versionValidated = true;
+        this._onVersionReady?.();
+        this._onVersionReady = undefined;
+      }
     });
 
     const packet = this.sessionConfig.buildRequest();

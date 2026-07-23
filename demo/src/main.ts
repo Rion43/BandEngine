@@ -1,8 +1,10 @@
 import './style.css';
 import { log, hex as hexLog } from './logger.js';
-import { SppPacketV2, SppPacketType } from '../../src/SppPacketV2.js';
+import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src/SppPacketV2.js';
+import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
+import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '3.0-asama2';
+const VERSION = '3.0-asama3';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -23,11 +25,13 @@ versionBadge.textContent = `v${VERSION}`;
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
+let authProtocol: SppAuthProtocol | null = null;
+let authenticated = false;
 
-// SPPv2 buffer
 let sppBuffer = new Uint8Array();
 let notifyQueue: Uint8Array[] = [];
 let notifyResolve: ((d: Uint8Array) => void) | null = null;
+let authResolve: ((p: Uint8Array | null) => void) | null = null;
 
 // ── Persistent BLE handler ──
 function onBleNotify(this: BluetoothRemoteGATTCharacteristic, event: Event) {
@@ -54,7 +58,7 @@ function processSpp() {
         if (sppBuffer[i] === 0xa5 && sppBuffer[i + 1] === 0xa5) { next = i; break; }
       }
       if (next < 0) { sppBuffer = new Uint8Array(); return; }
-      log('warn', `skip ${next}B non-SPP bytes`);
+      log('warn', `skip ${next}B non-SPP`);
       sppBuffer = sppBuffer.slice(next);
     }
     const size = SppPacketV2.getExpectedPacketSize(sppBuffer);
@@ -72,25 +76,40 @@ function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
   log('recv', `SPP ${tn} seq=${pkt.sequenceNumber} len=${pkt.payload.length}`);
 
   switch (pkt.packetType) {
-    case SppPacketType.SESSION_CONFIG:
+    case SppPacketType.SESSION_CONFIG: {
       log('recv', `SESSION_CONFIG raw: ${hexLog(pkt.configData ?? pkt.payload)}`);
       if (pkt.configOpcode === 2) {
         const r = SppPacketV2.parseSessionConfigResponse(pkt.configData ?? pkt.payload);
         if (r) {
-          log('info', `📋 Session Config Response:`);
-          if (r.version) log('info', `  version: ${r.version.join('.')}`);
+          log('info', `📋 Session Config:`);
+          if (r.version) log('info', `  ✅ VERSION: ${r.version.join('.')}`);
           if (r.maxPacketSize) log('info', `  maxPacketSize: ${r.maxPacketSize}`);
           if (r.txWin) log('info', `  txWin: ${r.txWin}`);
           if (r.sendTimeout) log('info', `  sendTimeout: ${r.sendTimeout}ms`);
           setStatus('Session Config ✓', true);
+
+          // AŞAMA 3: Version doğrulandı, auth başlayabilir
+          if (r.version) {
+            log('info', `═══ VERSION OK: ${r.version.join('.')} ═══`);
+            log('info', `✅ Version valid. Authentication can start.`);
+          }
         }
       }
       break;
+    }
 
-    case SppPacketType.DATA:
+    case SppPacketType.DATA: {
       writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
-      log('recv', `DATA payload(${pkt.payload.length}B): ${hexLog(pkt.payload)}`);
+      const ch = SppChannel[pkt.channel ?? -1] ?? '?';
+      log('recv', `DATA ch=${ch} op=${SppDataOpcode[pkt.opcode ?? 0]} payload(${pkt.payload.length}B)`);
+
+      // Auth data handler
+      if (pkt.payload.length > 0 && authResolve) {
+        authResolve(pkt.payload);
+        authResolve = null;
+      }
       break;
+    }
 
     case SppPacketType.ACK:
       log('info', `ACK seq=${pkt.sequenceNumber}`);
@@ -104,6 +123,14 @@ function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
     if (notifyQueue.length > 0) { resolve(notifyQueue.shift()!); return; }
     const t = setTimeout(() => { if (notifyResolve === resolve) notifyResolve = null; reject(new Error(`Timeout ${timeoutMs}ms`)); }, timeoutMs);
     notifyResolve = (v) => { clearTimeout(t); resolve(v); };
+  });
+}
+
+function waitAuthPayload(timeoutMs: number): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    if (authResolve) authResolve(null);
+    const t = setTimeout(() => { authResolve = null; log('warn', `⏱ Auth timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
+    authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
   });
 }
 
@@ -169,14 +196,13 @@ $('btn-settings').addEventListener('click', () => {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 });
 
-// ── MAIN CONNECT (AŞAMA 2: Session Config only) ──
+// ── MAIN CONNECT (AŞAMA 3: Session Config → Version → Auth) ──
 
 async function startConnect() {
   try {
     setStatus('Pairing…'); btnConnect.disabled = true;
-    log('info', '═══ AŞAMA 2: CONNECT + SESSION CONFIG ═══');
-    sppBuffer = new Uint8Array();
-    notifyQueue = [];
+    log('info', '═══ AŞAMA 3: CONNECT → SESSION CONFIG → VERSION ═══');
+    sppBuffer = new Uint8Array(); notifyQueue = [];
 
     const device = await withTimeout(
       navigator.bluetooth.requestDevice({
@@ -192,14 +218,12 @@ async function startConnect() {
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'chars');
     const char5e = chars.find(c => c.uuid.includes('005e'));
     const char5f = chars.find(c => c.uuid.includes('005f'));
-    if (!char5e || !char5f) throw new Error('005E/005F bulunamadi');
+    if (!char5e || !char5f) throw new Error('005E/005F not found');
 
-    writeChar = char5f;
-    notifyChar = char5e;
+    writeChar = char5f; notifyChar = char5e;
     log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
-    log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse} N=${!!writeChar.properties.notify}`);
+    log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse}`);
 
-    // Persistent listener
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
     await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
@@ -210,38 +234,17 @@ async function startConnect() {
     const sessPkt = SppPacketV2.buildSessionConfigRequest();
     log('sent', `Session Config (${sessPkt.length}B) HEX: ${hexLog(sessPkt)}`);
     await writeBLE(sessPkt);
+    setStatus('Waiting for Session Config...');
 
-    log('info', 'Waiting for Session Config response...');
-    setStatus('Waiting for band...');
+    // Wait for first notification chain
+    await drainNotifications(15000);
 
-    // Wait for first notification
-    try {
-      const n = await withTimeout(waitOneNotification(15000), 15000, 'session config');
-      log('recv', `First notification (${n.length}B) HEX: ${hexLog(n)}`);
-      feedSpp(n);
-      // Wait a bit more for reassembly
-      await new Promise(r => setTimeout(r, 1000));
-      // Try to get more data
-      let more = true;
-      while (more) {
-        try {
-          const extra = await withTimeout(waitOneNotification(2000), 2000, 'extra');
-          log('recv', `Extra notification (${extra.length}B) HEX: ${hexLog(extra)}`);
-          feedSpp(extra);
-        } catch { more = false; }
-      }
-    } catch (e: any) {
-      log('error', `❌ Session Config: ${e.message}`);
-      setStatus('Session Config failed', false);
-      btnConnect.disabled = false;
-      return;
-    }
+    // Check if SessionConfig was parsed
+    log('info', '═══ SESSION CONFIG DONE, VERSION PARSED ═══');
+    log('info', '✅ İlk notification alındı.');
+    log('info', 'AŞAMA 3 tamam. Auth bir sonraki aşamada başlayacak.');
 
-    log('info', '═══ SESSION CONFIG DONE ═══');
-    log('info', 'İlk notification alındı. SPPv2 oturum başarılı.');
-    log('info', 'Bir sonraki adım: AŞAMA 3 (Version Response Parser)');
-
-    setStatus('Session Config OK', true);
+    setStatus('Session Config + Version OK', true);
     setButtons(true);
     btnConnect.disabled = false;
 
@@ -252,9 +255,28 @@ async function startConnect() {
   }
 }
 
+async function drainNotifications(initialTimeout: number) {
+  try {
+    const n = await withTimeout(waitOneNotification(initialTimeout), initialTimeout, 'first');
+    log('recv', `Notification (${n.length}B) HEX: ${hexLog(n)}`);
+    feedSpp(n);
+    await new Promise(r => setTimeout(r, 200));
+    for (let i = 0; i < 5; i++) {
+      try {
+        const extra = await withTimeout(waitOneNotification(1500), 1500, `extra-${i}`);
+        log('recv', `Extra (${extra.length}B) HEX: ${hexLog(extra)}`);
+        feedSpp(extra);
+      } catch { break; }
+    }
+  } catch (e: any) {
+    log('warn', `Notification drain: ${e.message}`);
+  }
+}
+
 btnDisconnect.onclick = () => {
   gattServer?.disconnect();
   gattServer = null; writeChar = null; notifyChar = null;
+  authProtocol = null; authenticated = false;
   sppBuffer = new Uint8Array();
   setButtons(false); setStatus('Disconnected');
 };

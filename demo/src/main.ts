@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '3.0-full-auth';
+const VERSION = '3.1-char-fix';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -279,11 +279,6 @@ async function startConnect() {
 
     if (!foundW || !foundN) throw new Error('No writable/notifiable char pair found');
     writeChar = foundW; notifyChar = foundN;
-    log('info', `Using W=${writeChar.uuid} N=${notifyChar.uuid}`);
-
-    writeChar = char5f; notifyChar = char5e;
-    log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
-    log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse} N=${!!writeChar.properties.notify}`);
 
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);

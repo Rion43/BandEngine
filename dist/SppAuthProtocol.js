@@ -71,7 +71,9 @@ export class SppAuthProtocol {
             ? parseInt(navigator.userAgentData?.platformVersion ?? '30') || 30
             : 30;
         const phoneName = typeof navigator !== 'undefined' ? (navigator.userAgent || 'BandEngine') : 'BandEngine';
-        const region = 'TR';
+        const region = typeof navigator !== 'undefined'
+            ? (navigator.language?.substring(0, 2).toUpperCase() || 'US')
+            : 'US';
         const deviceInfo = encodeAuthDeviceInfo(apiLevel, phoneName, region);
         console.log(`[SppAuthProtocol] DeviceInfo plaintext (${deviceInfo.length}B): ${msgHex(deviceInfo)}`);
         // AES-CCM encrypt device info with encKey + encNonce

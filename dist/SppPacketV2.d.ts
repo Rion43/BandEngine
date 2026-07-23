@@ -3,12 +3,18 @@ export declare enum SppPacketType {
     SESSION_CONFIG = 2,
     DATA = 3
 }
+/**
+ * Logical channels (Gadgetbridge Channel enum).
+ * Authentication ve ProtobufCommand ikisi de wire'da channel byte=1 gönderir
+ * ama opcode farklıdır: Authentication → SEND_PLAINTEXT, ProtobufCommand → SEND_ENCRYPTED.
+ * getRawChannel() mapping'i wire byte'ına çevirir.
+ */
 export declare enum SppChannel {
     UNKNOWN = -1,
     PROTOBUF_COMMAND = 1,
-    AUTHENTICATION = 1,
     DATA = 2,
-    ACTIVITY = 5
+    ACTIVITY = 5,
+    AUTHENTICATION = 6
 }
 export declare enum SppDataOpcode {
     UNKNOWN = -1,
@@ -40,6 +46,7 @@ export interface ParsedPacket {
     configData?: Uint8Array;
 }
 export declare function crc16Arc(data: Uint8Array): number;
+export declare function getOpCodeForChannel(channel: SppChannel): SppDataOpcode;
 export declare class SppPacketV2 {
     private static sequenceCounter;
     static resetSequence(): void;
@@ -48,6 +55,11 @@ export declare class SppPacketV2 {
     static encode(packetType: SppPacketType, sequenceNumber: number, payload: Uint8Array): Uint8Array;
     static decode(data: Uint8Array): ParsedPacket | null;
     static buildSessionConfigRequest(): Uint8Array;
+    /** Build SPPv2 DATA packet.
+     * Gadgetbridge'de opCode==SEND_ENCRYPTED ? encryptV2(payload) : payload yapılır.
+     * WebCrypto async olduğu için, encrypted payload'ı önce şifreleyip SEND_PLAINTEXT ile çağır.
+     * SEND_ENCRYPTED flag'ı Gadgetbridge compat için korunur.
+     */
     static buildDataPacket(channel: SppChannel, opcode: SppDataOpcode, payload: Uint8Array): Uint8Array;
     static buildAck(sequenceNumber: number): Uint8Array;
     static parseSessionConfigResponse(payload: Uint8Array): {

@@ -1,0 +1,157 @@
+Artık yeni teori üretme.
+
+Yeni mimari yazma.
+
+Yeni auth sistemi yazma.
+
+Protobuf'a dokunma.
+
+SPPv2'ye dokunma.
+
+Çünkü elimizdeki kanıtlar:
+
+✓ FE95 çalışıyor
+✓ Notify çalışıyor
+✓ Session Config çalışıyor
+✓ Version geliyor
+✓ SPPv2 byte-identical
+✓ PhoneNonce protobuf byte-identical
+✓ CRC aynı
+✓ Channel aynı
+✓ Opcode aynı
+
+Artık tek şüpheli:
+
+SEQUENCE NUMBER.
+
+══════════════════════════════════════
+
+Gadgetbridge kodunu tekrar incele.
+
+Sadece sequence yönetimine odaklan.
+
+Aşağıdakileri KODDAN doğrula.
+
+1.
+
+SessionConfig oluşturulurken
+
+setSequenceNumber(0)
+
+counter'ı artırıyor mu?
+
+Yoksa sadece packet.sequence=0 mı oluyor?
+
+Kod satırlarını göster.
+
+══════════════════════════════════════
+
+2.
+
+İlk Authentication DATA packet'i
+
+(getAndIncrement)
+
+hangi değeri döndürüyor?
+
+Gerçek cevap:
+
+0 mı
+
+1 mi
+
+Kod satırıyla kanıtla.
+
+══════════════════════════════════════
+
+3.
+
+BandEngine'in mevcut davranışını çıkar.
+
+SessionConfig sırasında
+
+counter kaç oluyor?
+
+PhoneNonce sırasında
+
+kaç oluyor?
+
+Log üret.
+
+══════════════════════════════════════
+
+4.
+
+Eğer gerçekten fark varsa
+
+SADECE bunu değiştir.
+
+Başka hiçbir dosyaya dokunma.
+
+Amaç:
+
+SessionConfig
+
+sequence = 0
+
+counter değişmeyecek.
+
+PhoneNonce
+
+ilk DATA sequence = 0
+
+olacak.
+
+══════════════════════════════════════
+
+5.
+
+Build al.
+
+Log üret.
+
+Şunları yaz:
+
+SessionConfig seq
+
+Internal counter
+
+PhoneNonce seq
+
+Gönderilen tam SPPv2 HEX
+
+══════════════════════════════════════
+
+6.
+
+Test et.
+
+WatchNonce geldi mi?
+
+Eğer geldiyse
+
+HEMEN DUR.
+
+Başka kod yazma.
+
+══════════════════════════════════════
+
+Eğer GELMEDİYSE
+
+yeni teori üretme.
+
+Önce Gadgetbridge'in aynı anda gönderdiği bütün paketleri çıkar.
+
+SessionConfig'tan
+
+WatchNonce gelene kadar
+
+gönderilen ve alınan HER paketi sırayla listele.
+
+Hiçbir paketi atlama.
+
+Ama önce sadece sequence hipotezini test et.
+
+Bu commit yalnızca sequence davranışını değiştirecek.
+
+Başka hiçbir değişiklik yapılmayacak.

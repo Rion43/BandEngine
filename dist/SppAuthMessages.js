@@ -8,83 +8,71 @@
 //   AuthDeviceInfo { unknown1(f1), phoneApiLevel(f2), phoneName(f3), unknown3(f4), region(f5) }
 import { toHex } from './SppAuthCrypto.js';
 export { toHex };
-// ── Low-level protobuf helpers ──
-function skipField(data, i) {
-    if (i >= data.length)
-        return i;
-    const tag = data[i];
-    const wireType = tag & 0x07;
-    i++;
-    switch (wireType) {
-        case 0: // varint
-            while (i < data.length && data[i - 1] & 0x80)
-                i++;
-            return i;
-        case 1: // fixed64
-            return i + 8;
-        case 2: // length-delimited
-            if (i >= data.length)
-                return data.length;
-            let len = 0;
-            let shift = 0;
-            while (i < data.length) {
-                const b = data[i++];
-                len |= (b & 0x7f) << shift;
-                shift += 7;
-                if (!(b & 0x80))
-                    break;
-            }
-            return i + len;
-        case 5: // fixed32
-            return i + 4;
-        default:
-            return data.length;
-    }
+// ── Protobuf varint helpers ──
+/** Encode a field tag: (fieldNum << 3) | wireType as varint */
+function encodeTag(fieldNum, wireType) {
+    const val = (fieldNum << 3) | wireType;
+    return encodeVarint(val);
 }
+function encodeVarint(val) {
+    const bytes = [];
+    while (val >= 0x80) {
+        bytes.push((val & 0x7f) | 0x80);
+        val >>>= 7;
+    }
+    bytes.push(val & 0x7f);
+    return new Uint8Array(bytes);
+}
+/** Read a full varint from data starting at i, return {value, nextIndex} */
+function readVarint(data, i) {
+    let val = 0;
+    let shift = 0;
+    while (i < data.length) {
+        const b = data[i++];
+        val |= (b & 0x7f) << shift;
+        shift += 7;
+        if (!(b & 0x80))
+            return { value: val, next: i };
+    }
+    return null;
+}
+/**
+ * Find a length-delimited (wire type 2) field by field number.
+ * Properly handles multi-byte varint tags.
+ */
 function findField(data, fieldNum) {
     let i = 0;
     while (i < data.length) {
-        const tag = data[i];
-        const fn = tag >> 3;
-        const wt = tag & 0x07;
-        i++;
+        const tag = readVarint(data, i);
+        if (!tag)
+            return null;
+        const fn = tag.value >> 3;
+        const wt = tag.value & 0x07;
+        i = tag.next;
         if (fn === fieldNum && wt === 2) {
-            // length-delimited — read length
-            let len = 0;
-            let shift = 0;
-            while (i < data.length) {
-                const b = data[i++];
-                len |= (b & 0x7f) << shift;
-                shift += 7;
-                if (!(b & 0x80))
-                    break;
-            }
-            if (i + len > data.length)
+            const len = readVarint(data, i);
+            if (!len || i + len.value > data.length)
                 return null;
-            return data.slice(i, i + len);
+            return data.slice(len.next, len.next + len.value);
         }
-        // skip this field
-        if (wt === 0) {
-            while (i < data.length && (data[i - 1] & 0x80))
-                i++;
+        // skip field
+        if (wt === 0) { // varint
+            const v = readVarint(data, i);
+            if (!v)
+                return null;
+            i = v.next;
         }
-        else if (wt === 1) {
+        else if (wt === 1) { // fixed64
             i += 8;
         }
-        else if (wt === 5) {
-            i += 4;
+        else if (wt === 2) { // length-delimited
+            const len = readVarint(data, i);
+            if (!len)
+                return null;
+            i = len.next + len.value;
         }
-        else if (wt === 2) {
-            let len = 0;
-            let shift = 0;
-            while (i < data.length) {
-                const b = data[i++];
-                len |= (b & 0x7f) << shift;
-                shift += 7;
-                if (!(b & 0x80))
-                    break;
-            }
-            i += len;
+        else if (wt === 5) { // fixed32
+            i += 4;
         }
         else {
             return null;
@@ -92,76 +80,91 @@ function findField(data, fieldNum) {
     }
     return null;
 }
+function skipField(data, i) {
+    const tag = readVarint(data, i);
+    if (!tag)
+        return data.length;
+    const wt = tag.value & 0x07;
+    i = tag.next;
+    switch (wt) {
+        case 0: {
+            const v = readVarint(data, i);
+            return v ? v.next : data.length;
+        }
+        case 1: return i + 8;
+        case 2: {
+            const len = readVarint(data, i);
+            return len ? len.next + len.value : data.length;
+        }
+        case 5: return i + 4;
+        default: return data.length;
+    }
+}
 // ── PhoneNonce (CMD_NONCE=26) ──
 export function encodeCommandPhoneNonce(nonce) {
-    // Command{type=1, subtype=26, auth{phoneNonce{nonce}}}
-    // PhoneNonce field 1 = nonce (bytes) -> tag 0x0a
-    const pnInner = new Uint8Array(2 + nonce.length);
-    pnInner[0] = 0x0a;
-    pnInner[1] = nonce.length;
-    pnInner.set(nonce, 2);
-    // Auth field 30 = phoneNonce -> tag 0xf2
-    const authField = new Uint8Array(2 + pnInner.length);
-    authField[0] = 0xf2; // (30<<3)|2 = 242 = 0xf2
-    authField[1] = pnInner.length;
-    authField.set(pnInner, 2);
-    // Command field 3 = auth (length-delimited) -> tag 0x1a
-    const cmdAuth = new Uint8Array(2 + authField.length);
-    cmdAuth[0] = 0x1a;
-    cmdAuth[1] = authField.length;
-    cmdAuth.set(authField, 2);
-    // Command wrapper: type=1, subtype=26
-    const out = new Uint8Array(4 + cmdAuth.length);
-    out[0] = 0x08; // field 1 type=varint
-    out[1] = 1; // COMMAND_TYPE = 1
-    out[2] = 0x10; // field 2 subtype=varint
-    out[3] = 26; // CMD_NONCE = 26
-    out.set(cmdAuth, 4);
+    // PhoneNonce field 1 = nonce (bytes)
+    const pnTag = encodeTag(1, 2);
+    const pnInner = new Uint8Array(pnTag.length + 1 + nonce.length);
+    pnInner.set(pnTag, 0);
+    pnInner[pnTag.length] = nonce.length;
+    pnInner.set(nonce, pnTag.length + 1);
+    // Auth field 30 = phoneNonce
+    const authTag = encodeTag(30, 2);
+    const authPayload = new Uint8Array(authTag.length + 1 + pnInner.length);
+    authPayload.set(authTag, 0);
+    authPayload[authTag.length] = pnInner.length;
+    authPayload.set(pnInner, authTag.length + 1);
+    // Command field 3 = auth
+    const cmdAuthTag = encodeTag(3, 2);
+    const cmdAuth = new Uint8Array(cmdAuthTag.length + 1 + authPayload.length);
+    cmdAuth.set(cmdAuthTag, 0);
+    cmdAuth[cmdAuthTag.length] = authPayload.length;
+    cmdAuth.set(authPayload, cmdAuthTag.length + 1);
+    // Command: type=1 (field 1 varint), subtype=26 (field 2 varint)
+    const typeTag = encodeTag(1, 0);
+    const subTag = encodeTag(2, 0);
+    const out = new Uint8Array(typeTag.length + 1 + subTag.length + 1 + cmdAuth.length);
+    let off = 0;
+    out.set(typeTag, off);
+    off += typeTag.length;
+    out[off++] = 1; // COMMAND_TYPE
+    out.set(subTag, off);
+    off += subTag.length;
+    out[off++] = 26; // CMD_NONCE
+    out.set(cmdAuth, off);
     return out;
 }
-/**
- * Decode WatchNonce from a Command protobuf response.
- * Walks: Command.field3(Auth).field31(WatchNonce){nonce, hmac}
- */
 export function decodeWatchNonce(payload) {
-    // Step 1: Extract Auth (field 3) from Command
     const authBytes = findField(payload, 3);
     if (!authBytes) {
-        console.warn(`[decodeWatchNonce] no Auth (field 3) in Command`);
+        console.warn(`[decodeWatchNonce] no Auth (field 3)`);
         return null;
     }
-    // Step 2: Extract WatchNonce (field 31) from Auth
     const wnBytes = findField(authBytes, 31);
     if (!wnBytes) {
-        console.warn(`[decodeWatchNonce] no WatchNonce (field 31) in Auth`);
+        console.warn(`[decodeWatchNonce] no WatchNonce (field 31)`);
         return null;
     }
-    // Step 3: Extract nonce(f1) and hmac(f2) from WatchNonce
     let nonce = null;
     let hmac = null;
     let i = 0;
     while (i < wnBytes.length) {
-        const tag = wnBytes[i];
-        const fn = tag >> 3;
-        const wt = tag & 0x07;
-        i++;
+        const tag = readVarint(wnBytes, i);
+        if (!tag)
+            break;
+        const fn = tag.value >> 3;
+        const wt = tag.value & 0x07;
+        i = tag.next;
         if (wt !== 2) {
-            i = skipField(wnBytes, i - 1);
+            i = skipField(wnBytes, i - (tag.next - i) - 1);
             continue;
         }
-        let len = 0;
-        let shift = 0;
-        while (i < wnBytes.length) {
-            const b = wnBytes[i++];
-            len |= (b & 0x7f) << shift;
-            shift += 7;
-            if (!(b & 0x80))
-                break;
-        }
-        if (i + len > wnBytes.length)
+        const len = readVarint(wnBytes, i);
+        if (!len || i + len.value > wnBytes.length)
             break;
-        const val = wnBytes.slice(i, i + len);
-        i += len;
+        i = len.next;
+        const val = wnBytes.slice(i, i + len.value);
+        i += len.value;
         if (fn === 1)
             nonce = val;
         else if (fn === 2)
@@ -169,7 +172,7 @@ export function decodeWatchNonce(payload) {
     }
     if (nonce && hmac)
         return { nonce, hmac };
-    console.warn(`[decodeWatchNonce] missing nonce or hmac in WatchNonce`);
+    console.warn(`[decodeWatchNonce] missing nonce or hmac`);
     return null;
 }
 // ── AuthDeviceInfo ──
@@ -177,108 +180,105 @@ export function encodeAuthDeviceInfo(apiLevel, phoneName, region) {
     const fields = [];
     // field 1: unknown1 = 0 (varint)
     fields.push(new Uint8Array([0x08, 0x00]));
-    // field 2: phoneApiLevel (fixed32 = wire type 5)
-    // Gadgetbridge stores SDK_INT as float in proto, wire type fixed32
+    // field 2: phoneApiLevel (fixed32)
     const apiLevelBytes = new Uint8Array(4);
     new DataView(apiLevelBytes.buffer).setFloat32(0, apiLevel, true);
-    fields.push(new Uint8Array([0x15, ...apiLevelBytes]));
-    // field 3: phoneName (string, length-delimited)
+    const f2Tag = encodeTag(2, 5);
+    fields.push(new Uint8Array([...f2Tag, ...apiLevelBytes]));
+    // field 3: phoneName (string)
     const nameBytes = new TextEncoder().encode(phoneName);
-    const nameLen = nameBytes.length;
-    if (nameLen <= 0x7f) {
-        fields.push(new Uint8Array([0x1a, nameLen, ...nameBytes]));
-    }
-    else {
-        const lenBuf = new Uint8Array(2);
-        lenBuf[0] = nameLen | 0x80;
-        lenBuf[1] = nameLen >> 7;
-        fields.push(new Uint8Array([0x1a, ...lenBuf, ...nameBytes]));
-    }
-    // field 4: unknown3 = 224 (varint)
+    const f3Tag = encodeTag(3, 2);
+    const namePrefix = new Uint8Array(f3Tag.length + 1 + nameBytes.length);
+    namePrefix.set(f3Tag, 0);
+    namePrefix[f3Tag.length] = nameBytes.length;
+    namePrefix.set(nameBytes, f3Tag.length + 1);
+    fields.push(namePrefix);
+    // field 4: unknown3 = 224 (varint: 0xe0 0x01)
     fields.push(new Uint8Array([0x20, 0xe0, 0x01]));
-    // field 5: region (string, 2-letter uppercase)
+    // field 5: region (string)
     const regionBytes = new TextEncoder().encode(region);
-    fields.push(new Uint8Array([0x2a, regionBytes.length, ...regionBytes]));
-    const totalLen = fields.reduce((sum, f) => sum + f.length, 0);
+    const f5Tag = encodeTag(5, 2);
+    const regionPrefix = new Uint8Array(f5Tag.length + 1 + regionBytes.length);
+    regionPrefix.set(f5Tag, 0);
+    regionPrefix[f5Tag.length] = regionBytes.length;
+    regionPrefix.set(regionBytes, f5Tag.length + 1);
+    fields.push(regionPrefix);
+    const totalLen = fields.reduce((s, f) => s + f.length, 0);
     const out = new Uint8Array(totalLen);
-    let offset = 0;
+    let off = 0;
     for (const f of fields) {
-        out.set(f, offset);
-        offset += f.length;
+        out.set(f, off);
+        off += f.length;
     }
     return out;
 }
 // ── AuthStep3 (CMD_AUTH=27) ──
-export function encodeCommandAuthStep3(authStep3) {
-    // AuthStep3 wrapping:
-    // Command{type=1, subtype=27, auth{authStep3{f1=encNonces, f2=encDeviceInfo}}}
-    // AuthStep3 field 1 = encryptedNonces (bytes) -> tag 0x0a
-    // AuthStep3 field 2 = encryptedDeviceInfo (bytes) -> tag 0x12
-    // But authStep3 is already encoded by caller as [0x0a, len, nonces, 0x12, len, info]
-    // Auth field 32 = authStep3 -> tag (32<<3)|2 = 258 varint = 0x82 0x02
-    const authAs = new Uint8Array(3 + authStep3.length);
-    authAs[0] = 0x82; // field 32, wire type 2
-    authAs[1] = 0x02;
-    authAs[2] = authStep3.length;
-    authAs.set(authStep3, 3);
-    // Command field 3 = auth
-    const cmdAuth = new Uint8Array(2 + authAs.length);
-    cmdAuth[0] = 0x1a;
-    cmdAuth[1] = authAs.length;
-    cmdAuth.set(authAs, 2);
-    // Command: type=1, subtype=27
-    const out = new Uint8Array(4 + cmdAuth.length);
-    out[0] = 0x08;
-    out[1] = 1;
-    out[2] = 0x10;
-    out[3] = 27;
-    out.set(cmdAuth, 4);
+export function encodeAuthStep3Payload(encryptedNonces, encryptedDeviceInfo) {
+    // AuthStep3: field 1 = encryptedNonces(bytes), field 2 = encryptedDeviceInfo(bytes)
+    const f1Tag = encodeTag(1, 2);
+    const f2Tag = encodeTag(2, 2);
+    const out = new Uint8Array(f1Tag.length + 1 + encryptedNonces.length + f2Tag.length + 1 + encryptedDeviceInfo.length);
+    let off = 0;
+    out.set(f1Tag, off);
+    off += f1Tag.length;
+    out[off++] = encryptedNonces.length;
+    out.set(encryptedNonces, off);
+    off += encryptedNonces.length;
+    out.set(f2Tag, off);
+    off += f2Tag.length;
+    out[off++] = encryptedDeviceInfo.length;
+    out.set(encryptedDeviceInfo, off);
     return out;
 }
-export function encodeAuthStep3Payload(encryptedNonces, encryptedDeviceInfo) {
-    // AuthStep3 protobuf: field 1 = encryptedNonces(bytes), field 2 = encryptedDeviceInfo(bytes)
-    const out = new Uint8Array(4 + encryptedNonces.length + encryptedDeviceInfo.length);
-    out[0] = 0x0a;
-    out[1] = encryptedNonces.length;
-    out.set(encryptedNonces, 2);
-    const off = 2 + encryptedNonces.length;
-    out[off] = 0x12;
-    out[off + 1] = encryptedDeviceInfo.length;
-    out.set(encryptedDeviceInfo, off + 2);
+export function encodeCommandAuthStep3(authStep3) {
+    // Auth field 32 = authStep3
+    const f32Tag = encodeTag(32, 2);
+    const authAs = new Uint8Array(f32Tag.length + 1 + authStep3.length);
+    authAs.set(f32Tag, 0);
+    authAs[f32Tag.length] = authStep3.length;
+    authAs.set(authStep3, f32Tag.length + 1);
+    // Command field 3 = auth
+    const f3Tag = encodeTag(3, 2);
+    const cmdAuth = new Uint8Array(f3Tag.length + 1 + authAs.length);
+    cmdAuth.set(f3Tag, 0);
+    cmdAuth[f3Tag.length] = authAs.length;
+    cmdAuth.set(authAs, f3Tag.length + 1);
+    // Command: type=1, subtype=27
+    const tTag = encodeTag(1, 0);
+    const sTag = encodeTag(2, 0);
+    const out = new Uint8Array(tTag.length + 1 + sTag.length + 1 + cmdAuth.length);
+    let off = 0;
+    out.set(tTag, off);
+    off += tTag.length;
+    out[off++] = 1;
+    out.set(sTag, off);
+    off += sTag.length;
+    out[off++] = 27;
+    out.set(cmdAuth, off);
     return out;
 }
 export function decodeAuthResponse(payload) {
-    // Extract Auth (field 3) from Command
     const authBytes = findField(payload, 3);
     if (!authBytes) {
-        // Maybe it's just a flat status byte
-        if (payload.length >= 2 && payload[0] === 0x08) {
-            const status = payload[1];
-            return { status, success: status === 1 };
-        }
+        if (payload.length >= 2 && payload[0] === 0x08)
+            return { status: payload[1], success: payload[1] === 1 };
         return null;
     }
-    // Find status (field 1, varint) in Auth
     let i = 0;
     while (i < authBytes.length) {
-        const tag = authBytes[i];
-        const fn = tag >> 3;
-        const wt = tag & 0x07;
-        i++;
+        const tag = readVarint(authBytes, i);
+        if (!tag)
+            break;
+        const fn = tag.value >> 3;
+        const wt = tag.value & 0x07;
+        i = tag.next;
         if (fn === 1 && wt === 0) {
-            // varint
-            let val = 0;
-            let shift = 0;
-            while (i < authBytes.length) {
-                const b = authBytes[i++];
-                val |= (b & 0x7f) << shift;
-                shift += 7;
-                if (!(b & 0x80))
-                    break;
-            }
-            return { status: val, success: val === 1 };
+            const v = readVarint(authBytes, i);
+            if (!v)
+                return null;
+            return { status: v.value, success: v.value === 1 };
         }
-        i = skipField(authBytes, i - 1);
+        i = skipField(authBytes, i);
     }
     return null;
 }

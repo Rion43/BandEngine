@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.0-rawlog';
+const VERSION = '5.1-plaintext-test';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -96,12 +96,10 @@ function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
     }
 
     case SppPacketType.DATA: {
-      // ACK immediately
       writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
       const ch = SppChannel[pkt.channel ?? -1] ?? '?';
       log('recv', `DATA ch=${ch} op=${SppDataOpcode[pkt.opcode ?? 0]} payload(${pkt.payload.length}B)`);
 
-      // Route to auth handler
       if (pkt.payload.length > 0 && authResolve) {
         authResolve(pkt.payload);
         authResolve = null;
@@ -127,12 +125,10 @@ function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
 
 /** Register authResolve BEFORE write, then wait for response — race condition fix. */
 async function sendAndWaitAuth(data: Uint8Array, timeoutMs: number, label: string): Promise<Uint8Array | null> {
-  // Register handler first, then send
   return new Promise((resolve) => {
     if (authResolve) authResolve(null);
     const t = setTimeout(() => { authResolve = null; log('warn', `⏱ ${label} timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
     authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
-    // Send AFTER handler registered
     writeBLE(data).catch((e) => { clearTimeout(t); authResolve = null; log('error', `${label} write failed: ${e.message}`); resolve(null); });
   });
 }
@@ -217,7 +213,7 @@ $('btn-settings').addEventListener('click', () => {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 });
 
-// ── MAIN CONNECT: Full auth flow (AŞAMA 3-7) ──
+// ── MAIN CONNECT: Full auth flow ──
 
 async function startConnect() {
   try {
@@ -235,10 +231,9 @@ async function startConnect() {
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
 
-    // Try FE95 service first, fallback to all services
+    // Find characteristics more robustly
     let foundW: BluetoothRemoteGATTCharacteristic | null = null;
     let foundN: BluetoothRemoteGATTCharacteristic | null = null;
-
     try {
       const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
       const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
@@ -250,35 +245,15 @@ async function startConnect() {
 
       foundN = chars.find(c => c.properties.notify && matchUuid(c, '005e')) ?? null;
       foundW = chars.find(c => (c.properties.write || c.properties.writeWithoutResponse) && matchUuid(c, '005f')) ?? null;
-
-      if (!foundN || !foundW) {
-        const ww = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
-        const nf = chars.find(c => c.properties.notify);
-        log('warn', `005E/005F not found — fallback W=${ww?.uuid ?? '?'} N=${nf?.uuid ?? '?'}`);
-        foundW = foundW ?? ww ?? null;
-        foundN = foundN ?? nf ?? null;
-      }
+      if (!foundN || !foundW) { foundW = foundW ?? chars.find(c => c.properties.write || c.properties.writeWithoutResponse) ?? null; foundN = foundN ?? chars.find(c => c.properties.notify) ?? null; }
     } catch (e: any) {
-      log('warn', `FE95 failed: ${e.message}, scanning all services...`);
-    }
-
-    // Fallback: scan ALL services
-    if (!foundW || !foundN) {
+      log('warn', `FE95 failed: ${e.message}, scanning all...`);
       const allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'all-svcs');
-      log('info', `Scanning ${allSvcs.length} services...`);
-      for (const svc of allSvcs) {
-        try {
-          const sc = await withTimeout(svc.getCharacteristics(), 3000, svc.uuid);
-          const ww = sc.find(c => c.properties.writeWithoutResponse || c.properties.write);
-          const nf = sc.find(c => c.properties.notify);
-          log('info', `  ${svc.uuid}: ${sc.length} chars${ww ? ' W' : ''}${nf ? ' N' : ''}`);
-          if (ww && nf && !foundW && !foundN) { foundW = ww; foundN = nf; }
-        } catch { }
-      }
+      for (const svc of allSvcs) { try { const sc = await withTimeout(svc.getCharacteristics(), 3000, svc.uuid); foundW = foundW ?? sc.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null; foundN = foundN ?? sc.find(c => c.properties.notify) ?? null; } catch {} }
     }
-
     if (!foundW || !foundN) throw new Error('No writable/notifiable char pair found');
     writeChar = foundW; notifyChar = foundN;
+    log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
 
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
@@ -304,10 +279,8 @@ async function startConnect() {
     const { nonce: pNonce, packet: pnPacket } = authProtocol.buildPhoneNonce();
     log('info', `PhoneNonce: ${toHex(pNonce)}`);
 
-    // Wrap in SPPv2 DATA(AUTHENTICATION, PLAINTEXT)
     const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
     log('sent', `PhoneNonce DATA (${sppPn.length}B): ${hexLog(sppPn)}`);
-    // Register authResolve BEFORE write — race condition fix!
     const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'WatchNonce');
     if (!wnPayload) {
       log('error', '❌ No WatchNonce - timeout');
@@ -323,11 +296,10 @@ async function startConnect() {
       btnConnect.disabled = false; return;
     }
 
-    // ═══ 4. AUTH STEP 3 (CMD_AUTH=27) ═══
-    log('info', '═══ 4. AUTH STEP 3 ═══');
+    // ═══ 3. AUTH STEP 3 (CMD_AUTH=27) ═══
+    log('info', '═══ 3. AUTH STEP 3 ═══');
     const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
     log('sent', `AuthStep3 DATA (${sppA3.length}B): ${hexLog(sppA3)}`);
-    // Register authResolve BEFORE write
     const authPayload = await sendAndWaitAuth(sppA3, 10000, 'AuthResult');
     if (!authPayload) {
       log('error', '❌ No auth result - timeout');
@@ -342,20 +314,19 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ AUTH SONRASI: RAW LOG ═══
-      log("info", "═══ POST-AUTH: RAW NOTIFICATION LOG ═══");
+      // ═══ AUTH SONRASI: DeviceInfo (SEND_PLAINTEXT) ═══
+      log('info', '═══ POST-AUTH: SEND DEVICE INFO ═══');
       try {
-        console.log("[AUTH] Waiting 6s for notifications...");
-        await new Promise(r => setTimeout(r, 6000));
-        console.log("[AUTH] notifyQueue:", notifyQueue.length, "sppBuffer:", sppBuffer.length, "bytes");
-        for (let i = 0; i < notifyQueue.length; i++) {
-          const q = notifyQueue[i];
-          console.log("[AUTH] Q[" + i + "] (" + q.length + "B): " + Array.from(q).map(b=>b.toString(16).padStart(2,"0")).join(" "));
-        }
-        if (sppBuffer.length > 0) {
-          console.log("[AUTH] SPP buffer: " + Array.from(sppBuffer).map(b=>b.toString(16).padStart(2,"0")).join(" "));
-        }
-      } catch (be) { console.error("[AUTH] Error:", be); }
+        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
+        log('info', `DeviceInfo cmd: ${toHex(cmd)}`);
+        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_PLAINTEXT, cmd);
+        log('sent', `SPPv2 (${spp.length}B): ${hexLog(spp)}`);
+        await writeBLE(spp);
+        await new Promise(r => setTimeout(r, 5000));
+        log('info', `Queue: ${notifyQueue.length}, SPP buf: ${sppBuffer.length}B`);
+        for (let i = 0; i < notifyQueue.length; i++) { log('recv', `Q[${i}](${notifyQueue[i].length}B): ${hexLog(notifyQueue[i])}`); }
+        if (sppBuffer.length > 0) { log('info', `SPPbuf: ${hexLog(sppBuffer)}`); }
+      } catch (be: any) { log('error', `Post: ${be?.message ?? be}`); }
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

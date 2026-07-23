@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '4.4-post-auth';
+const VERSION = '4.5-post-auth';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -354,13 +354,10 @@ async function startConnect() {
         const encrypted = await authProtocol!.encryptV2(batteryCmd);
         log('info', `Encrypted (${encrypted.length}B): ${toHex(encrypted)}`);
 
-        // Send as SPPv2 DATA with SEND_ENCRYPTED opcode
+        // Send as SPPv2 DATA with SEND_ENCRYPTED opcode (sendAndWaitAuth handles write)
         const sppPkt = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encrypted);
         log('sent', `Battery request SPPv2 DATA (${sppPkt.length}B): ${hexLog(sppPkt)}`);
-        await writeBLE(sppPkt);
-
-        // Wait for response
-        const batteryResponse = await waitAuthPayload(8000);
+        const batteryResponse = await sendAndWaitAuth(sppPkt, 8000, 'Battery');
         if (batteryResponse) {
           log('recv', `Battery response (${batteryResponse.length}B): ${toHex(batteryResponse)}`);
 

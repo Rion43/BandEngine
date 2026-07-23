@@ -98,7 +98,6 @@ function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
     case SppPacketType.DATA: {
       // ACK immediately
       writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
-      ackTracker.resolve(pkt.sequenceNumber);
       const ch = SppChannel[pkt.channel ?? -1] ?? '?';
       log('recv', `DATA ch=${ch} op=${SppDataOpcode[pkt.opcode ?? 0]} payload(${pkt.payload.length}B)`);
 
@@ -126,11 +125,15 @@ function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
   });
 }
 
-function waitAuthPayload(timeoutMs: number): Promise<Uint8Array | null> {
+/** Register authResolve BEFORE write, then wait for response — race condition fix. */
+async function sendAndWaitAuth(data: Uint8Array, timeoutMs: number, label: string): Promise<Uint8Array | null> {
+  // Register handler first, then send
   return new Promise((resolve) => {
     if (authResolve) authResolve(null);
-    const t = setTimeout(() => { authResolve = null; log('warn', `⏱ Auth timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
+    const t = setTimeout(() => { authResolve = null; log('warn', `⏱ ${label} timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
     authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
+    // Send AFTER handler registered
+    writeBLE(data).catch((e) => { clearTimeout(t); authResolve = null; log('error', `${label} write failed: ${e.message}`); resolve(null); });
   });
 }
 
@@ -269,11 +272,8 @@ async function startConnect() {
     // Wrap in SPPv2 DATA(AUTHENTICATION, PLAINTEXT)
     const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
     log('sent', `PhoneNonce DATA (${sppPn.length}B): ${hexLog(sppPn)}`);
-    await writeBLE(sppPn);
-
-    // ═══ 3. WAIT WATCH NONCE ═══
-    log('info', '═══ 3. WAIT WATCH NONCE ═══');
-    const wnPayload = await waitAuthPayload(10000);
+    // Register authResolve BEFORE write — race condition fix!
+    const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'WatchNonce');
     if (!wnPayload) {
       log('error', '❌ No WatchNonce - timeout');
       setStatus('WatchNonce timeout', false);
@@ -292,11 +292,8 @@ async function startConnect() {
     log('info', '═══ 4. AUTH STEP 3 ═══');
     const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
     log('sent', `AuthStep3 DATA (${sppA3.length}B): ${hexLog(sppA3)}`);
-    await writeBLE(sppA3);
-
-    // ═══ 5. AUTH RESULT ═══
-    log('info', '═══ 5. AUTH RESULT ═══');
-    const authPayload = await waitAuthPayload(10000);
+    // Register authResolve BEFORE write
+    const authPayload = await sendAndWaitAuth(sppA3, 10000, 'AuthResult');
     if (!authPayload) {
       log('error', '❌ No auth result - timeout');
       setStatus('Auth result timeout', false);

@@ -230,8 +230,12 @@ export class SppPacketV2 {
     return this.encode(SppPacketType.SESSION_CONFIG, this.getNextSequence(), payload);
   }
 
+  /** Build SPPv2 DATA packet.
+   * Gadgetbridge'de opCode==SEND_ENCRYPTED ? encryptV2(payload) : payload yapılır.
+   * WebCrypto async olduğu için, encrypted payload'ı önce şifreleyip SEND_PLAINTEXT ile çağır.
+   * SEND_ENCRYPTED flag'ı Gadgetbridge compat için korunur.
+   */
   static buildDataPacket(channel: SppChannel, opcode: SppDataOpcode, payload: Uint8Array): Uint8Array {
-    // DataPacket.getPacketPayloadBytes: channel(1 lower nibble) | opcode(1) | encrypted/plaintext payload
     const packetPayload = new Uint8Array(2 + payload.length);
     packetPayload[0] = getRawChannel(channel) & 0x0f;
     packetPayload[1] = opcode & 0xff;

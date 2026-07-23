@@ -207,6 +207,7 @@ export class SppPacketV2 {
 
   static buildSessionConfigRequest(): Uint8Array {
     // Gadgetbridge SessionConfigPacket.getPacketPayloadBytes birebir
+    // seq=0 explicit, counter tüketilmez (Gadgetbridge initializeDevice.setSequenceNumber(0))
     const payload = new Uint8Array([
       SessionConfigOpcode.START_SESSION_REQUEST,
 
@@ -227,7 +228,7 @@ export class SppPacketV2 {
       0x10, 0x27,
     ]);
 
-    return this.encode(SppPacketType.SESSION_CONFIG, this.getNextSequence(), payload);
+    return this.encode(SppPacketType.SESSION_CONFIG, 0, payload);
   }
 
   /** Build SPPv2 DATA packet.

@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.5-ecb-nopadding';
+const VERSION = '5.6-webcrypto-ctr';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -318,7 +318,7 @@ async function startConnect() {
       try {
         const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
         log("info", "DeviceInfo cmd: " + toHex(cmd));
-        const enc = authProtocol!.encryptV2(cmd);
+        const enc = await authProtocol!.encryptV2(cmd);
         log("info", "Encrypted: " + toHex(enc));
         const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
         log("sent", "SPPv2 (" + spp.length + "B): " + hexLog(spp));

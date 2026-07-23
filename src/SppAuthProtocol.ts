@@ -158,13 +158,13 @@ export class SppAuthProtocol {
 
   // ── Encryption helpers (V2 Gadgetbridge style: AES-CTR with key-as-IV) ──
 
-  encryptV2(plaintext: Uint8Array): Uint8Array {
+  async encryptV2(plaintext: Uint8Array): Promise<Uint8Array> {
     if (!this._keys) throw new Error('AuthProtocol not initialized');
     console.log(`[SppAuthProtocol] encryptV2: ${msgHex(plaintext)}`);
     return aesCtrEncrypt(plaintext, this._keys.encKey);
   }
 
-  decryptV2(ciphertext: Uint8Array): Uint8Array {
+  async decryptV2(ciphertext: Uint8Array): Promise<Uint8Array> {
     if (!this._keys) throw new Error('AuthProtocol not initialized');
     console.log(`[SppAuthProtocol] decryptV2: ${msgHex(ciphertext)}`);
     return aesCtrDecrypt(ciphertext, this._keys.decKey);

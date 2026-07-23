@@ -1,13 +1,11 @@
 // SppAuthCrypto — Gadgetbridge-style auth key derivation
 
-function ab(u8: Uint8Array): ArrayBuffer { return u8.slice().buffer.slice(0) as ArrayBuffer; }
-
 export const toHex = (bytes: Uint8Array): string =>
   Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 
 async function hmac(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', ab(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return new Uint8Array(await crypto.subtle.sign('HMAC', k, ab(data)));
+  const k = await crypto.subtle.importKey('raw', key.buffer.slice(0) as ArrayBuffer, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data.buffer.slice(0) as ArrayBuffer));
 }
 
 const MIWEAR_AUTH = new TextEncoder().encode('miwear-auth');
@@ -36,27 +34,26 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-import { AES_ECB } from "asmcrypto.js/dist_es8/aes/ecb.js";
+/** AES-CTR using WebCrypto AES-CBC as ECB (first 16 bytes = ECB for single block) */
+async function ecbEncrypt(block: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, { name: 'AES-CBC' }, false, ['encrypt']);
+  const iv = new Uint8Array(16);
+  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: iv.buffer as ArrayBuffer }, k, block.buffer as ArrayBuffer));
+  return ct.slice(0, 16); // first 16 bytes = AES-ECB
+}
 
-export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
-  // Manual CTR mode: encrypt counter block, XOR with data
-  // Gadgetbridge: Cipher("AES/CTR/NoPadding"), key=key, iv=key
-  const blockSize = 16;
-  const counter = new Uint8Array(blockSize);
-  counter.set(key, 0);  // initial counter = key
+export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+  const bs = 16;
+  const counter = new Uint8Array(bs);
+  counter.set(key, 0);
   const result = new Uint8Array(data.length);
-  const encryptedCounter = new Uint8Array(blockSize);
-  for (let offset = 0; offset < data.length; offset += blockSize) {
-    const enc = AES_ECB.encrypt(counter, key, false);
-    encryptedCounter.set(enc, 0);
-    const chunkEnd = Math.min(offset + blockSize, data.length);
-    for (let i = offset; i < chunkEnd; i++) {
-      result[i] = data[i] ^ encryptedCounter[i - offset];
-    }
-    // increment counter (big-endian)
-    for (let i = blockSize - 1; i >= 0; i--) {
-      if (++counter[i] !== 0) break;
-    }
+  const aesKey = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, { name: 'AES-CBC' }, false, ['encrypt']);
+  const zeroIv = new Uint8Array(16);
+  for (let off = 0; off < data.length; off += bs) {
+    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: zeroIv.buffer as ArrayBuffer }, aesKey, counter.buffer as ArrayBuffer));
+    const end = Math.min(off + bs, data.length);
+    for (let i = off; i < end; i++) result[i] = data[i] ^ ct[i - off];
+    for (let i = bs - 1; i >= 0; i--) { if (++counter[i] !== 0) break; }
   }
   return result;
 }

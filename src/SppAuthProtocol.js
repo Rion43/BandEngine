@@ -70,7 +70,7 @@ export class SppAuthProtocol {
         const apiLevel = typeof navigator !== 'undefined'
             ? parseInt(navigator.userAgentData?.platformVersion ?? '30') || 30
             : 30;
-        const phoneName = typeof navigator !== 'undefined' ? (navigator.userAgent || 'BandEngine') : 'BandEngine';
+        const phoneName = 'BandEngine';
         const region = typeof navigator !== 'undefined'
             ? (navigator.language?.substring(0, 2).toUpperCase() || 'US')
             : 'US';

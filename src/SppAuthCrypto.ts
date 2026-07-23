@@ -36,13 +36,10 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', ab(key), { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
-  const enc = await crypto.subtle.encrypt(
-    { name: 'AES-CTR', counter: ab(key), length: 128 },
-    k, ab(data),
-  );
-  return new Uint8Array(enc);
+import { AES_CTR } from "asmcrypto.js";
+
+export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
+  return new Uint8Array(AES_CTR.encrypt(data, key, key));
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 

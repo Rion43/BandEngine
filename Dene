@@ -1,70 +1,231 @@
-BandEngine klasörü içinde bulunan "Gadgetbridge-master" klasörünü referans implementasyon olarak kullan.
+Bu analiz ve Gadgetbridge-master kaynak kodu artık tek referans olacak.
 
-İnternetten araştırma yapma.
+Mevcut WearPacket tabanlı auth implementasyonunu yamalamaya çalışma.
 
-Sadece bu klasördeki kaynak kodu incele.
+Yeni özellik ekleyerek mevcut auth'u düzeltmeye çalışma.
 
-Görevin:
+Bunun yerine Gadgetbridge mimarisini adım adım BandEngine'e taşı.
 
-BandEngine ile Gadgetbridge'in Xiaomi Smart Band 9 (veya en yakın Xiaomi protobuf implementasyonu) authentication akışını satır satır karşılaştırmak.
+ÖNEMLİ KURAL:
 
-Öncelikle Gadgetbridge-master içinde aşağıdakileri bul:
+Her adım tamamlanmadan bir sonraki adıma geçme.
 
-- Xiaomi Smart Band 9
-- Mi Band 9
-- Xiaomi protobuf
-- FE95
-- Authentication
-- Pairing
-- Session key
-- HKDF
-- AES
-- phoneNonce
-- bandNonce
-- WearPacket
-- Protobuf
-- Opcode
-- 005E
-- 005F
+Her adım sonunda:
 
-Bulduğun dosyaları listele.
+- build al
+- log üret
+- Git commit oluştur
+- sonraki adıma ancak önceki adım doğrulanırsa geç
 
-Ardından auth akışını çıkar.
+═══════════════════════════════════════
 
-Özellikle cevapla:
+AŞAMA 1
 
-1. İlk BLE write hangi fonksiyonda yapılıyor?
+SPPv2 katmanı
 
-2. İlk gönderilen protobuf mesajı nedir?
+Yeni dosyalar oluştur:
 
-3. WearPacket nasıl oluşturuluyor?
+- SppPacketV2
+- PacketEncoder
+- PacketDecoder
 
-4. İlk opcode nedir?
+Gadgetbridge'deki packet yapısını birebir uygula.
 
-5. HKDF tam olarak ne zaman çalışıyor?
+Özellikle:
 
-6. BandNonce hangi paketten geliyor?
+- preamble
+- packet type
+- sequence
+- payload length
+- checksum
+- protobuf/data channel ayrımı
 
-7. İlk notification nasıl işleniyor?
+Mevcut WearPacket kodunu silme.
 
-8. BandEngine ile satır satır karşılaştır.
+Geçici olarak iki sistem birlikte yaşayabilir.
 
-9. Farklı olan her satırı göster.
+Ama auth artık sadece SPPv2 üzerinden çalışacak.
 
-10. Timeout'a sebep olabilecek farkları önem sırasına göre sırala.
+LOG:
 
-Kod değiştirme.
+Gönderilen her SPPv2 frame'in tam HEX çıktısını yaz.
 
-Tahmin yapma.
+═══════════════════════════════════════
 
-Önce analiz yap.
+AŞAMA 2
 
-Sonunda bana şu formatta rapor ver:
+Session Config
 
-✅ Aynı olanlar
+Gadgetbridge'deki SessionConfigPacket yapısını birebir uygula.
 
-❌ Farklı olanlar
+Alanları tahmin etme.
 
-⚠️ Eksik implementasyonlar
+Gadgetbridge'deki değerleri kullan.
 
-🎯 Timeout'un en olası nedeni (kanıtıyla birlikte)
+Connect sonrası sıra:
+
+Connect
+↓
+
+Enable Notify
+↓
+
+START_SESSION_REQUEST
+↓
+
+Version Response bekle
+
+LOG:
+
+Session Config HEX
+
+Session Config write
+
+İlk notification
+
+═══════════════════════════════════════
+
+AŞAMA 3
+
+Version parser
+
+handleVersionPacket davranışını uygula.
+
+Band'dan gelen Version packet parse edilsin.
+
+Version doğrulanmadan auth başlamasın.
+
+LOG:
+
+Version packet HEX
+
+Parsed fields
+
+═══════════════════════════════════════
+
+AŞAMA 4
+
+Authentication
+
+Version başarılıysa
+
+startEncryptedHandshake()
+
+çağrılsın.
+
+PhoneNonce oluştur.
+
+CMD_NONCE kullan.
+
+WatchNonce bekle.
+
+LOG:
+
+PhoneNonce HEX
+
+WatchNonce HEX
+
+HMAC HEX
+
+═══════════════════════════════════════
+
+AŞAMA 5
+
+AuthStep3
+
+Gadgetbridge'deki protobuf'u birebir uygula.
+
+encryptedNonces
+
+encryptedDeviceInfo
+
+AuthDeviceInfo
+
+Alan isimlerini değiştirme.
+
+Tahmin etme.
+
+LOG:
+
+AuthStep3 HEX
+
+═══════════════════════════════════════
+
+AŞAMA 6
+
+Encryption
+
+Gadgetbridge'de Band 9 için gerçekten kullanılan yolu uygula.
+
+AES-CTR mi
+
+AES-CCM mi
+
+önce cihazın kullandığı yolu belirle.
+
+İkisini aynı anda yazma.
+
+LOG:
+
+Derived keys
+
+Encryption enabled
+
+═══════════════════════════════════════
+
+AŞAMA 7
+
+ACK
+
+Tek paket ACK
+
+daha sonra
+
+Chunk ACK
+
+═══════════════════════════════════════
+
+ÇOK ÖNEMLİ
+
+Artık hiçbir opcode
+
+hiçbir protobuf
+
+hiçbir checksum
+
+hiçbir packet type
+
+tahmin edilmesin.
+
+Gadgetbridge-master'da ne varsa birebir uygulansın.
+
+Kod satırlarını referans al.
+
+═══════════════════════════════════════
+
+İlk hedef AUTH değildir.
+
+İlk hedef şudur:
+
+START_SESSION gönder
+
+↓
+
+Banddan ilk notification gelsin
+
+↓
+
+Version packet parse edilsin
+
+↓
+
+Ancak bundan sonra Authentication başlasın.
+
+Bundan sonra her commit sonunda şu raporu üret:
+
+- Eklenen sınıflar
+- Değişen dosyalar
+- Gadgetbridge referans dosyaları
+- BandEngine farkları
+- Son log
+- Bir sonraki adım

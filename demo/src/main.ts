@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '4.8-post-auth';
+const VERSION = '4.9-decrypt-log';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -362,12 +362,25 @@ async function startConnect() {
           await new Promise(r => setTimeout(r, 200));
         }
 
-        // 3 saniye bekle, gelen notification'lari topla
+        // 3 saniye bekle, gelen notification'lari topla ve decrypt et
         await new Promise(r => setTimeout(r, 3000));
         let count = 0;
         while (true) {
           try {
-            const n = await withTimeout(waitOneNotification(2000), 2000, `resp-${count}`);
+            const n = await withTimeout(waitOneNotification(3000), 3000, `resp-${count}`);
+            log('recv', `Notification ${count} (${n.length}B): ${hexLog(n)}`);
+            // SPpv2 decode + decrypt dene
+            const decrypted = SppPacketV2.decode(n);
+            if (decrypted && decrypted.packetType === SppPacketType.DATA && decrypted.payload.length >= 2) {
+              if (decrypted.opcode === SppDataOpcode.SEND_ENCRYPTED) {
+                try {
+                  const plain = await authProtocol!.decryptV2(decrypted.payload.slice(2));
+                  log('info', `  Decrypted (${plain.length}B): ${toHex(plain)}`);
+                } catch (de: any) { log('warn', `  Decrypt failed: ${de.message}`); }
+              } else {
+                log('info', `  Plaintext payload: ${toHex(decrypted.payload.slice(2))}`);
+              }
+            }
             feedSpp(n);
             count++;
           } catch { break; }

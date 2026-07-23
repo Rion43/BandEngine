@@ -4,7 +4,7 @@ import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
-const VERSION = '5.3-asmcrypto-ctr';
+const VERSION = '5.4-manual-ctr';
 const $ = (id) => document.getElementById(id);
 const btnConnect = $('btn-connect');
 const btnDisconnect = $('btn-disconnect');

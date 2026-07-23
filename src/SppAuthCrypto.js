@@ -25,10 +25,9 @@ export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
     return out;
 }
 export { aesCcmEncrypt } from './aes-ccm.js';
-export async function aesCtrEncrypt(data, key) {
-    const k = await crypto.subtle.importKey('raw', ab(key), { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
-    const enc = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: ab(key), length: 128 }, k, ab(data));
-    return new Uint8Array(enc);
+import { AES_CTR } from "asmcrypto.js";
+export function aesCtrEncrypt(data, key) {
+    return new Uint8Array(AES_CTR.encrypt(data, key, key));
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 export async function verifyWatchHmac(decKey, watchNonce, phoneNonce, receivedHmac) {

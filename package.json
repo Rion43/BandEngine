@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",
+    "asmcrypto.js": "^2.3.2",
     "protobufjs": "^7.4.0"
   },
   "devDependencies": {

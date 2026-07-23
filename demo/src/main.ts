@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.0-decrypt';
+const VERSION = '5.0-rawlog';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -342,51 +342,20 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ AUTH SONRASI: Encrypted commands (Gadgetbridge gibi) ═══
-      log('info', '═══ POST-AUTH: DEVICE INFO + BATTERY ═══');
+      // ═══ AUTH SONRASI: RAW LOG ═══
+      log("info", "═══ POST-AUTH: RAW NOTIFICATION LOG ═══");
       try {
-        // Gadgetbridge initialize(): her service.initialize() async cagrilir
-        // Biz de response beklemeden gonderelim
-        const cmds = [
-          { name: 'DeviceInfo', subtype: 2 },
-          { name: 'Battery', subtype: 1 },
-        ];
-        for (const c of cmds) {
-          const cmd = new Uint8Array([0x08, 0x02, 0x10, c.subtype]);
-          log('info', `${c.name} cmd: ${toHex(cmd)}`);
-          const enc = await authProtocol!.encryptV2(cmd);
-          log('info', `${c.name} enc: ${toHex(enc)}`);
-          const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-          await writeBLE(spp);
-          log('sent', `${c.name} sent (${spp.length}B)`);
-          await new Promise(r => setTimeout(r, 200));
+        console.log("[AUTH] Waiting 6s for notifications...");
+        await new Promise(r => setTimeout(r, 6000));
+        console.log("[AUTH] notifyQueue:", notifyQueue.length, "sppBuffer:", sppBuffer.length, "bytes");
+        for (let i = 0; i < notifyQueue.length; i++) {
+          const q = notifyQueue[i];
+          console.log("[AUTH] Q[" + i + "] (" + q.length + "B): " + Array.from(q).map(b=>b.toString(16).padStart(2,"0")).join(" "));
         }
-
-        await new Promise(r => setTimeout(r, 3000));
-        let count = 0;
-        while (true) {
-          try {
-            const n = await withTimeout(waitOneNotification(3000), 3000, `resp-${count}`);
-            log('recv', `RAW (${n.length}B): ${hexLog(n)}`);
-            const decoded = SppPacketV2.decode(n);
-            if (decoded) {
-              log('info', `  -> SPP ${SppPacketType[decoded.packetType]} seq=${decoded.sequenceNumber}`);
-              if (decoded.packetType === SppPacketType.DATA && decoded.payload.length >= 2) {
-                const inner = decoded.payload.slice(2);
-                if (decoded.opcode === SppDataOpcode.SEND_ENCRYPTED && authProtocol?.keys) {
-                  try { const plain = await authProtocol.decryptV2(inner); log('info', `  -> DECRYPTED: ${toHex(plain)}`); }
-                  catch(e:any) { log('warn', `  -> DECRYPT FAIL: ${e.message}`); }
-                } else {
-                  log('info', `  -> PLAINTEXT: ${toHex(inner)}`);
-                }
-              }
-            }
-            feedSpp(n);
-            count++;
-          } catch { break; }
+        if (sppBuffer.length > 0) {
+          console.log("[AUTH] SPP buffer: " + Array.from(sppBuffer).map(b=>b.toString(16).padStart(2,"0")).join(" "));
         }
-        log('info', `Received ${count} total notifications`);
-      } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
+      } catch (be) { console.error("[AUTH] Error:", be); }
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

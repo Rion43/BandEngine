@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '4.3-auth-success';
+const VERSION = '4.4-post-auth';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -341,6 +341,48 @@ async function startConnect() {
       log('info', '🎉  AUTH SUCCESS!');
       setStatus('✓ Authenticated', true);
       setButtons(true);
+
+      // ═══ AUTH SONRASI: Battery Request (CMD_BATTERY=1, type=2) ═══
+      log('info', '═══ POST-AUTH: SEND BATTERY REQUEST ═══');
+      try {
+        // Gadgetbridge: sendCommand("get battery state", 2, 1)
+        // Protobuf: Command{type=2, subtype=1} (System field yok)
+        const batteryCmd = new Uint8Array([0x08, 0x02, 0x10, 0x01]);
+        log('info', `Battery command protobuf (${batteryCmd.length}B): ${toHex(batteryCmd)}`);
+
+        // Encrypt with auth session key (AES-CTR, key-as-IV)
+        const encrypted = await authProtocol!.encryptV2(batteryCmd);
+        log('info', `Encrypted (${encrypted.length}B): ${toHex(encrypted)}`);
+
+        // Send as SPPv2 DATA with SEND_ENCRYPTED opcode
+        const sppPkt = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encrypted);
+        log('sent', `Battery request SPPv2 DATA (${sppPkt.length}B): ${hexLog(sppPkt)}`);
+        await writeBLE(sppPkt);
+
+        // Wait for response
+        const batteryResponse = await waitAuthPayload(8000);
+        if (batteryResponse) {
+          log('recv', `Battery response (${batteryResponse.length}B): ${toHex(batteryResponse)}`);
+
+          // Try to decrypt
+          try {
+            const decrypted = await authProtocol!.decryptV2(batteryResponse);
+            log('info', `Decrypted response (${decrypted.length}B): ${toHex(decrypted)}`);
+
+            // Parse battery level from protobuf: System{Power{Battery{level}}}
+            // Simple parse: find varint field after 0x0a patterns
+            if (decrypted.length >= 2) {
+              log('info', `📊 Battery raw: ${toHex(decrypted)}`);
+            }
+          } catch (de: any) {
+            log('warn', `Decrypt failed: ${de.message}`);
+          }
+        } else {
+          log('warn', 'No battery response (timeout)');
+        }
+      } catch (be: any) {
+        log('error', `Battery request error: ${be?.message ?? be}`);
+      }
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

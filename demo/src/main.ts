@@ -236,8 +236,8 @@ async function startConnect() {
 
     const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
-    const char5e = chars.find(c => c.uuid.includes('005e'));
-    const char5f = chars.find(c => c.uuid.includes('005f'));
+    const char5e = chars.find(c => c.uuid.toLowerCase().includes('005e'));
+    const char5f = chars.find(c => c.uuid.toLowerCase().includes('005f'));
     if (!char5e || !char5f) throw new Error('005E/005F not found');
 
     writeChar = char5f;

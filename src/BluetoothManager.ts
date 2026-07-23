@@ -1,15 +1,13 @@
 // BluetoothManager — Web Bluetooth API wrapper for Xiaomi Smart Band 9 (SPPv2)
+// AŞAMA 2: Connect → Enable Notify → START_SESSION_REQUEST → Response bekle
 
 import { BLE_SERVICES } from './types.js';
 import {
   ParsedPacket, SppChannel, SppDataOpcode, SppPacketType, SppPacketV2, SessionConfigOpcode,
+  getOpCodeForChannel,
 } from './SppPacketV2.js';
 import { SessionConfig, SessionConfigResponse } from './SessionConfig.js';
-import { SppAuthProtocol } from './SppAuthProtocol.js';
-import { SppAckTracker } from './SppAckTracker.js';
-import { toHex as hex } from './SppAuthMessages.js';
 
-/** Convert Uint8Array to BufferSource (ArrayBuffer) with correct type */
 function buf(u8: Uint8Array): ArrayBuffer {
   return u8.slice().buffer as ArrayBuffer;
 }
@@ -24,20 +22,21 @@ export class BluetoothManager implements BluetoothTransport {
   private server?: BluetoothRemoteGATTServer;
   private writeChar?: BluetoothRemoteGATTCharacteristic;
   private notifyChar?: BluetoothRemoteGATTCharacteristic;
-  private notificationBuffer: Uint8Array[] = [];
+  private notificationQueue: Uint8Array[] = [];
   private notificationResolve: ((data: Uint8Array) => void) | null = null;
 
-  private sppPacketBuffer = new Uint8Array();
+  // SPPv2 reassembly buffer
+  private sppBuffer = new Uint8Array();
   private sppPacketHandler?: (packet: ParsedPacket) => void;
 
+  // Session Config
   private sessionConfig = new SessionConfig();
   private sessionConfigSent = false;
   private sessionConfigConfirmed = false;
   private sessionConfigResponse: SessionConfigResponse | null = null;
 
-  private authProtocol: SppAuthProtocol | null = null;
-  readonly ackTracker = new SppAckTracker();
-  private pendingAuthResolve: ((payload: Uint8Array | null) => void) | null = null;
+  // Auth state (connected sonrası)
+  private _onVersionData?: (payload: Uint8Array) => void;
 
   async connect(): Promise<void> {
     const device = await navigator.bluetooth.requestDevice({
@@ -53,26 +52,34 @@ export class BluetoothManager implements BluetoothTransport {
 
     const service = await this.server.getPrimaryService(BLE_SERVICES.MI_BAND_SERVICE);
 
+    // Gadgetbridge FE95 V2: notify=005E, write=005F
     this.notifyChar = await service.getCharacteristic(BLE_SERVICES.NOTIFY_CHAR);
     this.writeChar = await service.getCharacteristic(BLE_SERVICES.WRITE_CHAR);
 
+    // Persistent BLE notification handler
     this.notifyChar.addEventListener('characteristicvaluechanged', (event: Event) => {
       const target = event.target as unknown as BluetoothRemoteGATTCharacteristic;
       const value = new Uint8Array(target.value!.buffer);
-      this.handleIncomingData(value);
+      this.onBleData(value);
     });
     await this.notifyChar.startNotifications();
 
     console.log(`[BluetoothManager] FE95 connected`);
     console.log(`[BluetoothManager] notify=005E write=005F`);
 
+    // SPPv2 session başlat
+    this.sppBuffer = new Uint8Array();
     SppPacketV2.resetSequence();
+    this.sessionConfigSent = false;
+    this.sessionConfigConfirmed = false;
+
     await this.sendSessionConfig();
   }
 
   async write(data: Uint8Array): Promise<void> {
     if (!this.writeChar) throw new Error('BluetoothManager: not connected');
-    console.log(`[BluetoothManager] write (${data.length}B) ${hex(data)}`);
+    console.log(`[BT] >> write (${data.length}B)`);
+    console.log(`[BT] >> hex: ${toHex(data)}`);
 
     if (this.writeChar.properties.writeWithoutResponse) {
       await this.writeChar.writeValueWithoutResponse(buf(data));
@@ -81,9 +88,10 @@ export class BluetoothManager implements BluetoothTransport {
     }
   }
 
+  /** Raw notification bekle (bypass SPPv2 parser) */
   onNotification(): Promise<Uint8Array> {
-    if (this.notificationBuffer.length > 0) {
-      return Promise.resolve(this.notificationBuffer.shift()!);
+    if (this.notificationQueue.length > 0) {
+      return Promise.resolve(this.notificationQueue.shift()!);
     }
     return new Promise((resolve) => {
       this.notificationResolve = resolve;
@@ -94,60 +102,20 @@ export class BluetoothManager implements BluetoothTransport {
     this.sppPacketHandler = handler;
   }
 
-  async sendProtobufCommand(commandBytes: Uint8Array, channel: SppChannel = SppChannel.AUTHENTICATION): Promise<void> {
-    const packet = SppPacketV2.buildDataPacket(channel, SppDataOpcode.SEND_PLAINTEXT, commandBytes);
-    const seq = SppPacketV2.getNextSequence() - 1;
-    this.ackTracker.register(seq, 'protobuf');
-    await this.write(packet);
-  }
-
   getSessionConfigConfirmed(): boolean { return this.sessionConfigConfirmed; }
   getSessionConfigResponse(): SessionConfigResponse | null { return this.sessionConfigResponse; }
 
-  private waitForDataPayload(timeoutMs: number, label: string): Promise<Uint8Array | null> {
-    return new Promise((resolve) => {
-      if (this.pendingAuthResolve) this.pendingAuthResolve(null);
-      const timer = setTimeout(() => {
-        this.pendingAuthResolve = null;
-        console.warn(`[BluetoothManager] waitForDataPayload(${label}) timeout (${timeoutMs}ms)`);
-        resolve(null);
-      }, timeoutMs);
-      this.pendingAuthResolve = (payload: Uint8Array | null) => {
-        clearTimeout(timer);
-        this.pendingAuthResolve = null;
-        resolve(payload);
-      };
-    });
+  /** Version DATA handler (AŞAMA 3 için hazırlık) */
+  onVersionData(handler: (payload: Uint8Array) => void): void {
+    this._onVersionData = handler;
   }
 
-  /** Full auth handshake: PhoneNonce → WatchNonce → AuthStep3 → result */
-  async authHandshake(authProtocol: SppAuthProtocol): Promise<boolean> {
-    this.authProtocol = authProtocol;
-
-    // Step 1: PhoneNonce
-    const { packet: phoneNoncePacket } = authProtocol.buildPhoneNonce();
-    console.log(`[BluetoothManager] auth step 1: send PhoneNonce`);
-    await this.write(SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, phoneNoncePacket));
-
-    // Step 2: WatchNonce
-    const watchPayload = await this.waitForDataPayload(8000, 'WatchNonce');
-    if (!watchPayload) { console.error(`[BluetoothManager] auth step 2: no WatchNonce`); return false; }
-    console.log(`[BluetoothManager] auth step 2: WatchNonce received`);
-
-    const step3 = await authProtocol.processWatchNonce(watchPayload);
-    if (!step3) { console.error(`[BluetoothManager] auth step 2: WatchNonce processing failed`); return false; }
-
-    // Step 3: AuthStep3
-    console.log(`[BluetoothManager] auth step 3: send AuthStep3`);
-    await this.write(SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet));
-
-    // Step 4: Auth result
-    const authPayload = await this.waitForDataPayload(8000, 'AuthResult');
-    if (!authPayload) { console.error(`[BluetoothManager] auth step 4: no auth result`); return false; }
-
-    const success = authProtocol.processAuthResponse(authPayload);
-    console.log(`[BluetoothManager] auth: ${success ? '✓ SUCCESS' : '✗ FAILED'}`);
-    return success;
+  /** SPPv2 DataPacket gönder */
+  async sendDataPacket(channel: SppChannel, payload: Uint8Array): Promise<void> {
+    const opcode = getOpCodeForChannel(channel);
+    const packet = SppPacketV2.buildDataPacket(channel, opcode, payload);
+    console.log(`[BT] >> SPPv2 DATA ch=${SppChannel[channel]} op=${SppDataOpcode[opcode]} seq=${packet[3]}`);
+    await this.write(packet);
   }
 
   disconnect(): void {
@@ -155,94 +123,115 @@ export class BluetoothManager implements BluetoothTransport {
     this.server = undefined;
     this.writeChar = undefined;
     this.notifyChar = undefined;
-    this.notificationBuffer = [];
+    this.notificationQueue = [];
     this.notificationResolve = null;
-    this.sppPacketBuffer = new Uint8Array();
+    this.sppBuffer = new Uint8Array();
     this.sessionConfigSent = false;
     this.sessionConfigConfirmed = false;
     this.sessionConfigResponse = null;
-    this.ackTracker.reset();
-    this.authProtocol = null;
-    this.pendingAuthResolve = null;
+    this._onVersionData = undefined;
   }
+
+  // ── Private ──
 
   private async sendSessionConfig(): Promise<void> {
     if (this.sessionConfigSent) return;
-    this.sessionConfig.setResponseHandler((response) => {
+
+    this.sessionConfig.setResponseHandler((response: SessionConfigResponse) => {
       this.sessionConfigConfirmed = true;
       this.sessionConfigResponse = response;
-      console.log(`[BluetoothManager] Session Config confirmed`, response);
+      console.log(`[SessionConfig] RESPONSE PARSED: version=${response.version?.join('.')} maxPacketSize=${response.maxPacketSize} txWin=${response.txWin} sendTimeout=${response.sendTimeout}ms`);
     });
+
     const packet = this.sessionConfig.buildRequest();
-    console.log(`[BluetoothManager] send Session Config (${packet.length}B)`);
     await this.write(packet);
     this.sessionConfigSent = true;
   }
 
-  private handleIncomingData(value: Uint8Array): void {
+  /** Gelen BLE notification → SPPv2 reassembly */
+  private onBleData(value: Uint8Array): void {
+    // Push to queue for raw notification waiters
     if (this.notificationResolve) {
       this.notificationResolve(value);
       this.notificationResolve = null;
     } else {
-      this.notificationBuffer.push(value);
+      this.notificationQueue.push(value);
     }
-    const merged = new Uint8Array(this.sppPacketBuffer.length + value.length);
-    merged.set(this.sppPacketBuffer);
-    merged.set(value, this.sppPacketBuffer.length);
-    this.sppPacketBuffer = merged;
+
+    // SPPv2 reassembly
+    const merged = new Uint8Array(this.sppBuffer.length + value.length);
+    merged.set(this.sppBuffer);
+    merged.set(value, this.sppBuffer.length);
+    this.sppBuffer = merged;
     this.processSppBuffer();
   }
 
   private processSppBuffer(): void {
-    while (this.sppPacketBuffer.length >= 2) {
-      if (this.sppPacketBuffer[0] !== 0xa5 || this.sppPacketBuffer[1] !== 0xa5) {
-        const next = this.findNextPreamble(1);
-        if (next < 0) { this.sppPacketBuffer = new Uint8Array(); return; }
-        this.sppPacketBuffer = this.sppPacketBuffer.slice(next);
+    while (this.sppBuffer.length >= 2) {
+      // Find preamble [0xA5, 0xA5]
+      if (this.sppBuffer[0] !== 0xa5 || this.sppBuffer[1] !== 0xa5) {
+        let next = -1;
+        for (let i = 1; i < this.sppBuffer.length - 1; i++) {
+          if (this.sppBuffer[i] === 0xa5 && this.sppBuffer[i + 1] === 0xa5) { next = i; break; }
+        }
+        if (next < 0) { console.warn(`[BT] dropping non-SPPv2 bytes`); this.sppBuffer = new Uint8Array(); return; }
+        console.warn(`[BT] skip ${next}B before preamble`);
+        this.sppBuffer = this.sppBuffer.slice(next);
       }
-      const expectedSize = SppPacketV2.getExpectedPacketSize(this.sppPacketBuffer);
-      if (expectedSize === null || this.sppPacketBuffer.length < expectedSize) return;
 
-      const packetBytes = this.sppPacketBuffer.slice(0, expectedSize);
-      this.sppPacketBuffer = this.sppPacketBuffer.slice(expectedSize);
+      const expectedSize = SppPacketV2.getExpectedPacketSize(this.sppBuffer);
+      if (expectedSize === null || this.sppBuffer.length < expectedSize) return;
+
+      const packetBytes = this.sppBuffer.slice(0, expectedSize);
+      this.sppBuffer = this.sppBuffer.slice(expectedSize);
+
       const packet = SppPacketV2.decode(packetBytes);
       if (!packet) continue;
-      this.handleParsedPacket(packet);
+
+      this.onSppPacket(packet);
     }
   }
 
-  private handleParsedPacket(packet: ParsedPacket): void {
-    const typeName = SppPacketType[packet.packetType] || `?${packet.packetType}`;
-    const extra = packet.packetType === SppPacketType.DATA ? ` ch=${SppChannel[packet.channel ?? -1] ?? '?'}` : '';
-    console.log(`[BluetoothManager] recv ${typeName} seq=${packet.sequenceNumber} len=${packet.payload.length}${extra}`);
+  private onSppPacket(packet: ParsedPacket): void {
+    const tname = SppPacketType[packet.packetType] || `?${packet.packetType}`;
+    console.log(`[BT] << SPP ${tname} seq=${packet.sequenceNumber} len=${packet.payload.length}`);
 
     switch (packet.packetType) {
-      case SppPacketType.SESSION_CONFIG:
+      case SppPacketType.SESSION_CONFIG: {
+        console.log(`[BT] << SESSION_CONFIG opcode=${packet.configOpcode}`);
+        console.log(`[BT] << HEX: ${toHex(packet.configData ?? packet.payload)}`);
         if (packet.configOpcode === SessionConfigOpcode.START_SESSION_RESPONSE && packet.configData) {
           this.sessionConfig.handleResponse(packet.configData);
         }
         break;
+      }
 
       case SppPacketType.DATA: {
+        // Send ACK immediately (Gadgetbridge behavior)
         void this.write(SppPacketV2.buildAck(packet.sequenceNumber));
-        if (packet.payload.length > 0 && this.pendingAuthResolve) {
-          this.pendingAuthResolve(packet.payload);
+
+        const chname = SppChannel[packet.channel ?? SppChannel.UNKNOWN] || '?';
+        const opname = SppDataOpcode[packet.opcode ?? SppDataOpcode.UNKNOWN] || '?';
+        console.log(`[BT] << DATA ch=${chname} op=${opname} payload(${packet.payload.length}B)`);
+        console.log(`[BT] << HEX: ${toHex(packet.payload)}`);
+
+        // Version channel? (AŞAMA 3 için)
+        if (packet.channel === SppChannel.PROTOBUF_COMMAND && this._onVersionData) {
+          this._onVersionData(packet.payload);
+          this._onVersionData = undefined;
         }
+
         this.sppPacketHandler?.(packet);
         break;
       }
 
       case SppPacketType.ACK:
-        console.log(`[BluetoothManager] ACK for seq=${packet.sequenceNumber}`);
-        this.ackTracker.resolve(packet.sequenceNumber);
+        console.log(`[BT] << ACK seq=${packet.sequenceNumber}`);
         break;
     }
   }
+}
 
-  private findNextPreamble(startIndex: number): number {
-    for (let i = startIndex; i < this.sppPacketBuffer.length - 1; i++) {
-      if (this.sppPacketBuffer[i] === 0xa5 && this.sppPacketBuffer[i + 1] === 0xa5) return i;
-    }
-    return -1;
-  }
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }

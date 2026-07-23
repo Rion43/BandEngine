@@ -34,28 +34,15 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-/** AES-CTR using WebCrypto AES-CBC as ECB (first 16 bytes = ECB for single block) */
-async function ecbEncrypt(block: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, { name: 'AES-CBC' }, false, ['encrypt']);
-  const iv = new Uint8Array(16);
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: iv.buffer as ArrayBuffer }, k, block.buffer as ArrayBuffer));
-  return ct.slice(0, 16); // first 16 bytes = AES-ECB
-}
-
+/** AES-CTR using WebCrypto native AES-CTR */
 export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const bs = 16;
-  const counter = new Uint8Array(bs);
-  counter.set(key, 0);
-  const result = new Uint8Array(data.length);
-  const aesKey = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, { name: 'AES-CBC' }, false, ['encrypt']);
-  const zeroIv = new Uint8Array(16);
-  for (let off = 0; off < data.length; off += bs) {
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CBC', iv: zeroIv.buffer as ArrayBuffer }, aesKey, counter.buffer as ArrayBuffer));
-    const end = Math.min(off + bs, data.length);
-    for (let i = off; i < end; i++) result[i] = data[i] ^ ct[i - off];
-    for (let i = bs - 1; i >= 0; i--) { if (++counter[i] !== 0) break; }
-  }
-  return result;
+  const k = await crypto.subtle.importKey('raw', key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength), { name: 'AES-CTR' }, false, ['encrypt']);
+  const enc = await crypto.subtle.encrypt(
+    { name: 'AES-CTR', counter: key.slice().buffer, length: 128 },
+    k,
+    data
+  );
+  return new Uint8Array(enc);
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 

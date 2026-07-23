@@ -1,277 +1,159 @@
 import './style.css';
 import { log, hex } from './logger.js';
-import { SppPacketV2, SppPacketType, SessionConfigOpcode } from '../../src/SppPacketV2.js';
+import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode, SessionConfigOpcode } from '../../src/SppPacketV2.js';
+import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
+import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '2.8-sppv2-session';
+const VERSION = '3.0-sppv2-auth';
 
-const OPCODES = { AUTH_INIT: 26, AUTH_RESPONSE: 27, AUTH_CONFIRM: 28,
-  HEART_RATE_SUBSCRIBE: 69, HEART_RATE_UNSUBSCRIBE: 70, BATTERY_INFO: 12,
-};
+const $ = (id: string) => document.getElementById(id)!;
 
-async function hmacSha256(key: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return new Uint8Array(await crypto.subtle.sign('HMAC', k, data as any));
-}
+const btnConnect    = $('btn-connect') as HTMLButtonElement;
+const btnDisconnect = $('btn-disconnect') as HTMLButtonElement;
+const statusDot     = $('status-dot');
+const statusText    = $('status-text');
+const versionBadge  = $('version-badge');
+const wizard        = $('wizard');
+const mainUI        = $('main-ui');
+const ltkInput      = $('ltk-input') as HTMLInputElement;
+const btnSaveKey    = $('btn-save-key') as HTMLButtonElement;
+const wizardStatus  = $('wizard-status');
+const ltkChars      = $('ltk-chars');
 
-async function hkdfDerive(ikm: Uint8Array, salt: Uint8Array, info: Uint8Array): Promise<Uint8Array> {
-  const prk = await hmacSha256(ikm, salt);
-  const result = new Uint8Array(64);
-  let prev = new Uint8Array(0);
-  for (let i = 1; i <= 2; i++) {
-    const d = new Uint8Array(prev.length + info.length + 1);
-    d.set(prev); d.set(info, prev.length); d[d.length - 1] = i;
-    const r = await hmacSha256(prk, d);
-    result.set(new Uint8Array(r), (i - 1) * 32);
-    prev = new Uint8Array(r);
-  }
-  return result;
-}
-
-async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array, counter: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key as any, { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);
-  return new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-CTR', counter: counter as any, length: 128 }, k, data as any));
-}
-
-// Gadgetbridge-style key derivation for AuthStep3
-// computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) -> 64 bytes
-// Returns [decKey(16) | encKey(16) | decNonce(4) | encNonce(4) | ...]
-async function computeAuthStep3Hmac(secretKey: Uint8Array, phoneNonce: Uint8Array, watchNonce: Uint8Array): Promise<Uint8Array> {
-  const miwearAuthBytes = new TextEncoder().encode('miwear-auth');
-
-  // Step 1: HMAC-SHA256(secretKey, salt=phoneNonce||watchNonce) -> PRK
-  const salt = new Uint8Array(phoneNonce.length + watchNonce.length);
-  salt.set(phoneNonce);
-  salt.set(watchNonce, phoneNonce.length);
-
-  const prkKey = await crypto.subtle.importKey('raw', salt as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const prk = new Uint8Array(await crypto.subtle.sign('HMAC', prkKey, secretKey as any));
-
-  // Step 2: Custom HKDF expand with "miwear-auth" info
-  const output = new Uint8Array(64);
-  let prev = new Uint8Array(0);
-
-  for (let i = 1; i <= 2; i++) { // 2 blocks of 32 = 64
-    const data = new Uint8Array(prev.length + miwearAuthBytes.length + 1);
-    data.set(prev);
-    data.set(miwearAuthBytes, prev.length);
-    data[data.length - 1] = i;
-
-    const macKey = await crypto.subtle.importKey('raw', prk as any, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', macKey, data as any));
-
-    const copyLen = Math.min(32, output.length - (i - 1) * 32);
-    output.set(hmac.slice(0, copyLen), (i - 1) * 32);
-    prev = hmac;
-  }
-
-  return output;
-}
-
-// AES-CCM encryption for AuthStep3
-async function aesCcmEncrypt(key: Uint8Array, nonce: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
-  const cryptoKey = await crypto.subtle.importKey('raw', key as any, { name: 'AES-CCM' }, false, ['encrypt']);
-  // CCM tag length 4 bytes (32 bits) like Gadgetbridge
-  const encrypted = await crypto.subtle.encrypt({ name: 'AES-CCM', nonce, tagLength: 32 }, cryptoKey, data as any);
-  return new Uint8Array(encrypted);
-}
-
-// Protobuf encode AuthDeviceInfo
-function encodeAuthDeviceInfo(apiLevel: number, phoneName: string, region: string): Uint8Array {
-  // AuthDeviceInfo fields:
-  // 1: unknown1=0 (varint)
-  // 2: phoneApiLevel (float, 32-bit)
-  // 3: phoneName (string)
-  // 4: unknown3=224 (varint)
-  // 5: region (string, 2-letter uppercase)
-  const fields: Uint8Array[] = [];
-
-  // field 1: unknown1 = 0
-  fields.push(new Uint8Array([0x08, 0x00]));
-
-  // field 2: phoneApiLevel (float)
-  const apiLevelBytes = new Uint8Array(4);
-  new DataView(apiLevelBytes.buffer).setFloat32(0, apiLevel, true);
-  fields.push(new Uint8Array([0x15, 0x04, ...apiLevelBytes]));
-
-  // field 3: phoneName
-  const nameEncoder = new TextEncoder();
-  const nameBytes = nameEncoder.encode(phoneName);
-  fields.push(new Uint8Array([0x1a, nameBytes.length, ...nameBytes]));
-
-  // field 4: unknown3 = 224
-  fields.push(new Uint8Array([0x20, 0xe0, 0x01]));
-
-  // field 5: region
-  const regionBytes = new TextEncoder().encode(region);
-  fields.push(new Uint8Array([0x2a, regionBytes.length, ...regionBytes]));
-
-  const totalLen = fields.reduce((sum, f) => sum + f.length, 0);
-  const out = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const f of fields) {
-    out.set(f, offset);
-    offset += f.length;
-  }
-  return out;
-}
-
-function encodeHandshakeInit(nonce: Uint8Array): Uint8Array {
-  const out = new Uint8Array(2 + nonce.length);
-  out[0] = 0x0a; out[1] = nonce.length; out.set(nonce, 2);
-  return out;
-}
-
-function buildWearPacket(cmd: number, id: number, type: number, whichPayload: number, payload: Uint8Array): Uint8Array {
-  const out = new Uint8Array(4 + payload.length);
-  out[0] = cmd; out[1] = id; out[2] = type; out[3] = whichPayload;
-  out.set(payload, 4);
-  return out;
-}
-
-// Protobuf helpers for Xiaomi Command/PhoneNonce (matches Gadgetbridge xiaomi.proto)
-function encodePhoneNonce(nonce: Uint8Array): Uint8Array {
-  // PhoneNonce: field 1 = nonce (bytes)
-  // tag = (1 << 3) | 2 = 10 (0x0a)
-  const out = new Uint8Array(2 + nonce.length);
-  out[0] = 0x0a;
-  out[1] = nonce.length;
-  out.set(nonce, 2);
-  return out;
-}
-
-function encodeAuthPhoneNonce(nonce: Uint8Array): Uint8Array {
-  // Auth: field 30 = phoneNonce (length-delimited)
-  // tag = (30 << 3) | 2 = 242 (0xf2)
-  const phoneNonce = encodePhoneNonce(nonce);
-  const out = new Uint8Array(2 + phoneNonce.length);
-  out[0] = 0xf2;
-  out[1] = phoneNonce.length;
-  out.set(phoneNonce, 2);
-  return out;
-}
-
-function encodeCommandPhoneNonce(nonce: Uint8Array): Uint8Array {
-  // Command: type=1, subtype=26, auth=...
-  // field 1: type (varint) -> tag 0x08
-  // field 2: subtype (varint) -> tag 0x10
-  // field 3: auth (length-delimited) -> tag 0x1a
-  const auth = encodeAuthPhoneNonce(nonce);
-  const out = new Uint8Array(4 + auth.length);
-  out[0] = 0x08; // type field
-  out[1] = 1;    // COMMAND_TYPE = 1
-  out[2] = 0x10; // subtype field
-  out[3] = 26;   // CMD_NONCE = 26
-  out.set(auth, 4);
-  return out;
-}
-
-// Decode WatchNonce from Auth response
-// WatchNonce: field 1 = nonce (bytes), field 2 = hmac (bytes)
-// Auth: field 31 = watchNonce (length-delimited)
-function decodeWatchNonce(payload: Uint8Array): { nonce: Uint8Array; hmac: Uint8Array } | null {
-  let i = 0;
-  while (i < payload.length) {
-    const tag = payload[i++];
-    const fieldNum = tag >> 3;
-    const wireType = tag & 0x07;
-    if (wireType !== 2) { i += 1; continue; } // not length-delimited
-    const len = payload[i++];
-    const value = payload.slice(i, i + len);
-    i += len;
-    if (fieldNum === 31) { // watchNonce
-      // decode inner WatchNonce
-      let j = 0;
-      let nonce: Uint8Array | null = null;
-      let hmac: Uint8Array | null = null;
-      while (j < value.length) {
-        const innerTag = value[j++];
-        const innerField = innerTag >> 3;
-        const innerWire = innerTag & 0x07;
-        if (innerWire !== 2) { j += 1; continue; }
-        const innerLen = value[j++];
-        const innerVal = value.slice(j, j + innerLen);
-        j += innerLen;
-        if (innerField === 1) nonce = innerVal;
-        else if (innerField === 2) hmac = innerVal;
-      }
-      if (nonce && hmac) return { nonce, hmac };
-    }
-  }
-  return null;
-}
-
-// AuthStep3 encoding (Gadgetbridge-style)
-// AuthStep3: field 1 = encryptedNonces, field 2 = encryptedDeviceInfo
-// Auth: field 32 = authStep3 (length-delimited)
-function encodeAuthStep3(encryptedNonces: Uint8Array, encryptedDeviceInfo: Uint8Array): Uint8Array {
-  // encryptedNonces: tag 0x0a (field 1, length-delimited)
-  // encryptedDeviceInfo: tag 0x12 (field 2, length-delimited)
-  const authStep3 = new Uint8Array(4 + encryptedNonces.length + encryptedDeviceInfo.length);
-  authStep3[0] = 0x0a;
-  authStep3[1] = encryptedNonces.length;
-  authStep3.set(encryptedNonces, 2);
-  const off = 2 + encryptedNonces.length;
-  authStep3[off] = 0x12;
-  authStep3[off + 1] = encryptedDeviceInfo.length;
-  authStep3.set(encryptedDeviceInfo, off + 2);
-  return authStep3;
-}
-
-function encodeAuthAuthStep3(authStep3: Uint8Array): Uint8Array {
-  // Auth field 32 = authStep3 (length-delimited) -> tag 0xfa
-  const out = new Uint8Array(2 + authStep3.length);
-  out[0] = 0xfa;
-  out[1] = authStep3.length;
-  out.set(authStep3, 2);
-  return out;
-}
-
-function encodeCommandAuthStep3(authStep3: Uint8Array): Uint8Array {
-  // Command: type=1, subtype=27, auth={authStep3}
-  const auth = encodeAuthAuthStep3(authStep3);
-  const out = new Uint8Array(4 + auth.length);
-  out[0] = 0x08; // type
-  out[1] = 1;
-  out[2] = 0x10; // subtype
-  out[3] = 27;   // CMD_AUTH = 27
-  out.set(auth, 4);
-  return out;
-}
-
-// Protobuf encode AuthDeviceInfo
-
-function encodeAuthDeviceInfo(apiLevel: number, phoneName: string, region: string): Uint8Array {
-const btnConnect      = $('btn-connect') as HTMLButtonElement;
-const btnHrStart      = $('btn-hr-start') as HTMLButtonElement;
-const btnHrStop       = $('btn-hr-stop') as HTMLButtonElement;
-const btnDisconnect   = $('btn-disconnect') as HTMLButtonElement;
-const statusDot       = $('status-dot');
-const statusText      = $('status-text');
-const valBattery      = $('val-battery');
-const valCharging     = $('val-charging');
-const valHr           = $('val-hr');
-const hrChart         = $('hr-chart');
-const panelBattery    = $('panel-battery');
-const panelHr         = $('panel-hr');
-const wizard          = $('wizard');
-const mainUI          = $('main-ui');
-const ltkInput        = $('ltk-input') as HTMLInputElement;
-const btnSaveKey      = $('btn-save-key') as HTMLButtonElement;
-const wizardStatus    = $('wizard-status');
-const ltkChars        = $('ltk-chars');
-const versionBadge    = $('version-badge');
+versionBadge.textContent = `v${VERSION}`;
 
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
-let hrHistory: number[] = [];
-let _sessionAesKey: Uint8Array | null = null;
-let _sessionCounter: Uint8Array | null = null;
+let authProtocol: SppAuthProtocol | null = null;
+let authenticated = false;
 
-versionBadge.textContent = `v${VERSION}`;
+// SPPv2 reassembly
+let sppBuffer = new Uint8Array();
+let authResolve: ((p: Uint8Array | null) => void) | null = null;
+let notifyQueue: Uint8Array[] = [];
+let notifyResolve: ((p: Uint8Array) => void) | null = null;
+
+// ── Persistent BLE notification handler ──
+function onBleNotify(this: BluetoothRemoteGATTCharacteristic, event: Event) {
+  const value = new Uint8Array((event.target as EventTarget as unknown as BluetoothRemoteGATTCharacteristic).value!.buffer);
+
+  // Push to one-shot waiter
+  if (notifyResolve) { notifyResolve(value); notifyResolve = null; }
+  else { notifyQueue.push(value); }
+
+  // Also feed SPPv2 reassembly
+  feedSpp(value);
+}
+
+function feedSpp(data: Uint8Array) {
+  const merged = new Uint8Array(sppBuffer.length + data.length);
+  merged.set(sppBuffer);
+  merged.set(data, sppBuffer.length);
+  sppBuffer = merged;
+  processSpp();
+}
+
+function processSpp() {
+  while (sppBuffer.length >= 2) {
+    if (sppBuffer[0] !== 0xa5 || sppBuffer[1] !== 0xa5) {
+      let next = -1;
+      for (let i = 1; i < sppBuffer.length - 1; i++) {
+        if (sppBuffer[i] === 0xa5 && sppBuffer[i + 1] === 0xa5) { next = i; break; }
+      }
+      if (next < 0) { sppBuffer = new Uint8Array(); return; }
+      console.warn(`skip ${next}B before preamble`);
+      sppBuffer = sppBuffer.slice(next);
+    }
+    const size = SppPacketV2.getExpectedPacketSize(sppBuffer);
+    if (size === null || sppBuffer.length < size) return;
+    const bytes = sppBuffer.slice(0, size);
+    sppBuffer = sppBuffer.slice(size);
+    const packet = SppPacketV2.decode(bytes);
+    if (!packet) continue;
+    handleSppPacket(packet);
+  }
+}
+
+function handleSppPacket(packet: import('../../src/SppPacketV2.js').ParsedPacket) {
+  const tn = SppPacketType[packet.packetType] || `?`;
+  log('recv', `SPP ${tn} seq=${packet.sequenceNumber} len=${packet.payload.length}`);
+
+  switch (packet.packetType) {
+    case SppPacketType.SESSION_CONFIG:
+      if (packet.configOpcode === SessionConfigOpcode.START_SESSION_RESPONSE) {
+        const r = SppPacketV2.parseSessionConfigResponse(packet.configData ?? packet.payload);
+        log('info', `📋 Session Config:`);
+        if (r?.version) log('info', `  version: ${r.version.join('.')}`);
+        if (r?.maxPacketSize) log('info', `  maxPacketSize: ${r.maxPacketSize}`);
+        if (r?.txWin) log('info', `  txWin: ${r.txWin}`);
+        if (r?.sendTimeout) log('info', `  sendTimeout: ${r.sendTimeout}ms`);
+        setStatus('Session Config ✓', true);
+      }
+      break;
+
+    case SppPacketType.DATA: {
+      void writeBLE(SppPacketV2.buildAck(packet.sequenceNumber));
+      const ch = SppChannel[packet.channel ?? -1] ?? '?';
+      log('recv', `DATA ch=${ch} payload=${hex(packet.payload)}`);
+      if (packet.payload.length > 0 && authResolve) {
+        authResolve(packet.payload);
+        authResolve = null;
+      }
+      break;
+    }
+    case SppPacketType.ACK:
+      log('info', `🔁 ACK seq=${packet.sequenceNumber}`);
+      break;
+  }
+}
+
+// ── Wait helpers ──
+
+function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
+  return new Promise((resolve, reject) => {
+    if (notifyQueue.length > 0) { resolve(notifyQueue.shift()!); return; }
+    const t = setTimeout(() => { if (notifyResolve === resolve) notifyResolve = null; reject(new Error(`Timeout ${timeoutMs}ms`)); }, timeoutMs);
+    notifyResolve = (v) => { clearTimeout(t); resolve(v); };
+  });
+}
+
+function waitAuthPayload(timeoutMs: number): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    if (authResolve) authResolve(null);
+    const t = setTimeout(() => { authResolve = null; log('warn', `⏱ Auth timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
+    authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
+  });
+}
+
+// ── BLE write ──
+
+async function writeBLE(data: Uint8Array) {
+  if (!writeChar) throw new Error('no writeChar');
+  const buf = data.slice().buffer as ArrayBuffer;
+  if (writeChar.properties.writeWithoutResponse) {
+    await writeChar.writeValueWithoutResponse(buf);
+  } else {
+    await writeChar.writeValue(buf);
+  }
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error(`⏱ ${label} ${ms}ms`)), ms))]);
+}
+
+// ── UI ──
 
 function showWizard() { wizard.style.display = ''; mainUI.style.display = 'none'; }
 function showMainUI() { wizard.style.display = 'none'; mainUI.style.display = ''; }
+function setStatus(text: string, ok?: boolean) {
+  statusText.textContent = text;
+  statusDot.className = 'dot' + (ok === true ? ' connected' : ok === false ? ' error' : '');
+}
+function setButtons(connected: boolean) {
+  btnConnect.disabled = connected;
+  btnDisconnect.disabled = !connected;
+}
 
 ltkInput.addEventListener('input', () => {
   const raw = ltkInput.value.replace(/[^0-9a-fA-F]/g, '').toLowerCase();
@@ -286,12 +168,12 @@ ltkInput.addEventListener('input', () => {
 btnSaveKey.addEventListener('click', () => {
   if (!/^[0-9a-f]{32}$/i.test(ltkInput.value)) {
     wizardStatus.className = 'wizard-status error';
-    wizardStatus.innerHTML = '❌ Geçerli bir anahtar girin (32 karakter hex: 0-9, a-f)';
+    wizardStatus.innerHTML = '❌ 32 karakter hex girin';
     wizardStatus.style.display = 'block'; return;
   }
   localStorage.setItem('be_ltk', ltkInput.value.toLowerCase());
   wizardStatus.className = 'wizard-status success';
-  wizardStatus.innerHTML = '✅ Güvenlik anahtarı kaydedildi.<br><small>Bu cihazda tekrar girmeniz gerekmeyecek.</small>';
+  wizardStatus.innerHTML = '✅ Key saved';
   wizardStatus.style.display = 'block';
   setTimeout(() => { showMainUI(); startConnect(); }, 1500);
 });
@@ -299,7 +181,7 @@ btnSaveKey.addEventListener('click', () => {
 $('btn-settings').addEventListener('click', () => {
   const modal = document.createElement('div');
   modal.className = 'modal-overlay';
-  modal.innerHTML = `<div class="modal-box"><h3>⚙️ Ayarlar</h3><p>Güvenlik anahtarını sıfırlamak, mevcut anahtarı siler ve yeniden girmenizi gerektirir.</p><div class="btn-row"><button class="danger" id="btn-reset-key">🔑 Güvenlik Anahtarını Değiştir</button><button id="btn-close-modal">İptal</button></div></div>`;
+  modal.innerHTML = `<div class="modal-box"><h3>⚙️ Settings</h3><div class="btn-row"><button class="danger" id="btn-reset-key">🔑 Change Key</button><button id="btn-close-modal">Cancel</button></div></div>`;
   document.body.appendChild(modal);
   modal.querySelector('#btn-reset-key')!.addEventListener('click', () => {
     localStorage.removeItem('be_ltk'); modal.remove();
@@ -310,373 +192,109 @@ $('btn-settings').addEventListener('click', () => {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 });
 
-function setStatus(text: string, ok?: boolean) {
-  statusText.textContent = text;
-  statusDot.className = 'dot' + (ok === true ? ' connected' : ok === false ? ' error' : '');
-}
-function setButtons(connected: boolean) {
-  btnConnect.disabled = connected; btnDisconnect.disabled = !connected;
-  btnHrStart.disabled = true; btnHrStop.disabled = true;
-}
-function renderChart() {
-  const mx = Math.max(...hrHistory, 80);
-  hrChart.innerHTML = hrHistory.map((v, i) => `<div class="bar${i === hrHistory.length - 1 ? ' latest' : ''}" style="height:${(v / mx) * 100}%"></div>`).join('');
-}
-function addHrSample(bpm: number) { hrHistory.push(bpm); if (hrHistory.length > 80) hrHistory.shift(); renderChart(); valHr.textContent = `${bpm}`; }
-
-async function writeBLE(data: Uint8Array) {
-  if (!writeChar) throw new Error('writeChar not ready');
-  if (writeChar.properties.writeWithoutResponse) { // @ts-ignore
-    await writeChar.writeValueWithoutResponse(data);
-  } else { await writeChar.writeValue(data as any); }
-}
-
-function waitOneNotification(timeout = 10000): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    if (!notifyChar) return reject(new Error('notifyChar not ready'));
-    const t = setTimeout(() => { c(); reject(new Error(`Timeout ${timeout}ms`)); }, timeout);
-    const h = (e: Event) => { c(); resolve(new Uint8Array((e.target as BluetoothRemoteGATTCharacteristic).value!.buffer)); };
-    const c = () => { clearTimeout(t); notifyChar!.removeEventListener('characteristicvaluechanged', h); };
-    notifyChar.addEventListener('characteristicvaluechanged', h);
-  });
-}
-
-function startHrListener() {
-  if (!notifyChar) return;
-  const h = (e: Event) => {
-    const r = new Uint8Array((e.target as BluetoothRemoteGATTCharacteristic).value!.buffer);
-    log('recv', `HR: ${hex(r)}`);
-    if (r.length >= 7) addHrSample(r.length > 7 ? r[7] : 0);
-  };
-  (notifyChar as any)._hr = h; notifyChar.addEventListener('characteristicvaluechanged', h);
-}
-function stopHrListener() {
-  if (!notifyChar) return;
-  const h = (notifyChar as any)._hr;
-  if (h) { notifyChar.removeEventListener('characteristicvaluechanged', h); delete (notifyChar as any)._hr; }
-}
-
-function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
-  return Promise.race([p, new Promise<T>((_, r) => setTimeout(() => r(new Error(`⏱ ${label} ${ms}ms`)), ms))]);
-}
-
-function uuidExpand(s: string): string {
-  const h = s.replace(/^0x/i, '').toLowerCase();
-  if (h.length === 4) return `0000${h}-0000-1000-8000-00805f9b34fb`;
-  if (h.length === 8) return `${h}-0000-1000-8000-00805f9b34fb`;
-  return h;
-}
-function uuidMatch(a: string, b: string): boolean {
-  return a.replace(/-/g,'').toLowerCase().includes(b.replace(/-/g,'').toLowerCase())
-      || b.replace(/-/g,'').toLowerCase().includes(a.replace(/-/g,'').toLowerCase());
-}
+// ── Main ──
 
 async function startConnect() {
-  let device: BluetoothDevice | null = null;
   try {
     setStatus('Pairing…'); btnConnect.disabled = true;
     log('info', '═══ CONNECT ═══');
-    const SVC_UUIDS = [uuidExpand('fe95'), uuidExpand('fee0'), uuidExpand('fee1'),
-      uuidExpand('fee7'), uuidExpand('fef5'), uuidExpand('fef6'),
-      '0000180a-0000-1000-8000-00805f9b34fb', '0000180f-0000-1000-8000-00805f9b34fb'];
-    try {
-      device = await withTimeout(navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: SVC_UUIDS }), 30000, 'requestDevice');
-    } catch (e: any) {
-      log('warn', `requestDevice failed: ${e.message}, retrying...`);
-      device = await withTimeout(navigator.bluetooth.requestDevice({ filters: [{ namePrefix: 'Xiaomi Smart Band' }, { namePrefix: 'Mi Smart Band' }, { namePrefix: 'Mi' }, { namePrefix: 'Band' }], optionalServices: SVC_UUIDS }), 30000, 'requestDevice2');
-    }
-    log('info', `Device: ${device.name ?? '?'}  [${device.id}]`);
+    sppBuffer = new Uint8Array();
+
+    const device = await withTimeout(
+      navigator.bluetooth.requestDevice({
+        filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
+        optionalServices: [],
+      }), 30000, 'requestDevice');
+    log('info', `Device: ${device.name ?? '?'}`);
     if (!device.gatt) throw new Error('gatt null');
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
 
-    let allSvcs: BluetoothRemoteGATTService[] = [];
-    try { allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'services'); }
-    catch { for (const u of SVC_UUIDS) try { allSvcs.push(await withTimeout(gattServer.getPrimaryService(u), 3000, u)); } catch {} }
+    const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
+    const chars = await withTimeout(service.getCharacteristics(), 5000, 'chars');
+    const char5e = chars.find(c => c.uuid.includes('005e'));
+    const char5f = chars.find(c => c.uuid.includes('005f'));
+    if (!char5e || !char5f) throw new Error('005E/005F not found');
 
-    // ADIM 1: FE95 characteristic detayli log
-    log('info', `${allSvcs.length} services`);
-    const charMap = new Map<string, BluetoothRemoteGATTCharacteristic[]>();
-    for (const s of allSvcs) {
-      let chars: BluetoothRemoteGATTCharacteristic[] = [];
-      try { chars = await withTimeout(s.getCharacteristics(), 3000, s.uuid); }
-      catch { log('warn', `  ${s.uuid}: skip`); continue; }
-      charMap.set(s.uuid, chars);
-      for (const c of chars) {
-        log('info', `  ${c.uuid}`);
-        log('info', `    read=${!!c.properties.read} write=${!!c.properties.write} writeWithoutResponse=${!!c.properties.writeWithoutResponse} notify=${!!c.properties.notify} indicate=${!!c.properties.indicate}`);
-      }
-    }
+    writeChar = char5f;
+    notifyChar = char5e;
+    log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
 
-    const findSvc = (u: string) => { for (const [su] of charMap) if (uuidMatch(su, u)) return su; return null; };
-    const findChar = (su: string, s: string) => charMap.get(su)?.find(c => uuidMatch(c.uuid, s)) ?? null;
-    const firstWW = (su: string) => charMap.get(su)?.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null;
-    const firstN = (su: string) => charMap.get(su)?.find(c => c.properties.notify || c.properties.indicate) ?? null;
+    // Persistent listener (one listener, one handler)
+    notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
+    notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+    await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
 
-    let wc: BluetoothRemoteGATTCharacteristic | null = null, nc: BluetoothRemoteGATTCharacteristic | null = null;
-    const fe95 = findSvc('fe95');
-    if (fe95) {
-      const char5e = findChar(fe95, '005e'); const char5f = findChar(fe95, '005f');
-      if (char5e && char5f) { wc = char5f; nc = char5e; }
-      else if (char5e) { wc = char5e; nc = char5e; }
-      else if (char5f) { wc = char5f; nc = char5f; }
-    }
-    if (!wc || !nc) { const f = findSvc('fee0'); if (f) { wc = findChar(f, 'fee1'); nc = findChar(f, 'fee2'); } }
-    if (!wc || !nc) { for (const [su] of charMap) { wc = firstWW(su); nc = firstN(su); if (wc && nc) break; } }
-    if (!wc || !nc) throw new Error('Chars not found');
-    writeChar = wc; notifyChar = nc;
-    const wprops = writeChar.properties;
-    log('info', `W:${wc.uuid}  N:${nc.uuid}`);
-    log('info', `W-props: R=${!!wprops.read} W=${!!wprops.write} WW=${!!wprops.writeWithoutResponse} N=${!!wprops.notify}`);
-
-    try { await withTimeout(notifyChar.startNotifications(), 5000, 'notif'); }
-    catch (e: any) { throw new Error(`notifications: ${e?.message ?? e}`); }
-    if (writeChar !== notifyChar && writeChar.properties.notify) { try { await withTimeout(writeChar.startNotifications(), 3000, 'notif2'); } catch {} }
-
-    // ═══ SPPv2 SESSION CONFIG ONLY ══
-    log('info', '═══ SPPv2 SESSION CONFIG ═══');
+    // ═══ SESSION CONFIG ═══
+    log('info', '═══ SESSION CONFIG ═══');
     SppPacketV2.resetSequence();
-    const sessionPacket = SppPacketV2.buildSessionConfigRequest();
-    const packetHex = hex(sessionPacket);
-    log('sent', `SESSION_CONFIG START_SESSION_REQUEST: ${packetHex}`);
+    const sessPkt = SppPacketV2.buildSessionConfigRequest();
+    log('sent', `Session Config (${sessPkt.length}B): ${hex(sessPkt)}`);
+    await writeBLE(sessPkt);
 
-    let writeMethodUsed = 'none';
+    // Wait for first notification
     try {
-      if (wprops.writeWithoutResponse) {
-        writeMethodUsed = 'writeValueWithoutResponse';
-        // @ts-ignore
-        await writeChar.writeValueWithoutResponse(sessionPacket);
-      } else {
-        writeMethodUsed = 'writeValue';
-        await writeChar.writeValue(sessionPacket as any);
-      }
-      log('info', `Session Config write completed via ${writeMethodUsed}`);
+      const n = await withTimeout(waitOneNotification(15000), 15000, 'session');
+      feedSpp(n);
     } catch (e: any) {
-      log('error', `Session Config write FAILED: ${e?.message ?? e}`);
-      throw e;
+      log('error', `Session Config: ${e.message}`);
     }
+    await new Promise(r => setTimeout(r, 400));
 
-    let notification: Uint8Array | null = null;
-    let notifError: string | null = null;
-    try {
-      notification = await withTimeout(waitOneNotification(15000), 15000, 'session config response');
-      log('recv', `FIRST NOTIFICATION: ${hex(notification)}`);
-    } catch (e: any) {
-      notifError = e?.message ?? String(e);
-      log('error', `FIRST NOTIFICATION TIMEOUT: ${notifError}`);
+    // ═══ AUTH: PhoneNonce (CMD_NONCE=26) ═══
+    log('info', '═══ AUTH ═══');
+    const ltkStr = localStorage.getItem('be_ltk')!;
+    const ltk = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+
+    authProtocol = new SppAuthProtocol(ltk);
+    const { packet: pnPkt } = authProtocol.buildPhoneNonce();
+    const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPkt);
+    log('sent', `PhoneNonce DATA: ${hex(sppPn)}`);
+    await writeBLE(sppPn);
+
+    const wnPayload = await waitAuthPayload(10000);
+    if (!wnPayload) { log('error', '❌ No WatchNonce'); setStatus('No WatchNonce response', false); btnConnect.disabled = false; return; }
+    log('recv', `WatchNonce (${wnPayload.length}B): ${toHex(wnPayload)}`);
+
+    const step3 = await authProtocol.processWatchNonce(wnPayload);
+    if (!step3) { log('error', '❌ WatchNonce fail'); setStatus('WatchNonce decode failed', false); btnConnect.disabled = false; return; }
+
+    // AuthStep3 (CMD_AUTH=27)
+    log('info', '═══ AUTH STEP 3 ═══');
+    const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
+    log('sent', `AuthStep3 DATA: ${hex(sppA3)}`);
+    await writeBLE(sppA3);
+
+    const authPayload = await waitAuthPayload(10000);
+    if (!authPayload) { log('error', '❌ No auth result'); setStatus('Auth result timeout', false); btnConnect.disabled = false; return; }
+
+    const ok = authProtocol.processAuthResponse(authPayload);
+    if (ok) {
+      authenticated = true;
+      log('info', '🎉 AUTH SUCCESS!');
+      setStatus('✓ Authenticated', true);
+      setButtons(true);
+    } else {
+      log('error', '❌ AUTH FAIL');
+      setStatus('✗ Auth failed', false);
     }
-
-    const L = (s: string) => log('info', s);
-    L(`═══ SESSION CONFIG REPORT ═══`);
-    L(`Characteristic UUID : ${writeChar?.uuid ?? '?'}`);
-    L(`Notify UUID         : ${notifyChar?.uuid ?? '?'}`);
-    L(`Properties          : R=${!!wprops.read} W=${!!wprops.write} WW=${!!wprops.writeWithoutResponse} N=${!!wprops.notify} I=${!!wprops.indicate}`);
-    L(`Write method        : ${writeMethodUsed}`);
-    L(`Session packet hex  : ${packetHex}`);
-    L(`Bytes written       : ${sessionPacket.length}B`);
-    L(`First notification  : ${notification ? hex(notification) : `error: ${notifError}`}`);
-    L(`═══════════════════════`);
-
-    if (!notification) {
-      setStatus('Session Config timeout - see log', false);
-      btnConnect.disabled = false;
-      return;
-    }
-
-    const parsed = SppPacketV2.decode(notification);
-    if (!parsed) {
-      log('warn', 'First notification is not valid SPPv2 packet');
-      setStatus('First notification received (unparsed)', true);
-      btnConnect.disabled = false;
-      return;
-    }
-
-    log('info', `Parsed packet type=${SppPacketType[parsed.packetType]} seq=${parsed.sequenceNumber} payload=${hex(parsed.payload)}`);
-    if (parsed.packetType === SppPacketType.SESSION_CONFIG && parsed.configOpcode === SessionConfigOpcode.START_SESSION_RESPONSE) {
-      const response = SppPacketV2.parseSessionConfigResponse(parsed.configData ?? parsed.payload);
-      log('info', `Session Config response parsed:`);
-      if (response?.version) log('info', `  version: ${response.version.join('.')}`);
-      if (response?.maxPacketSize) log('info', `  maxPacketSize: ${response.maxPacketSize}`);
-      if (response?.txWin) log('info', `  txWin: ${response.txWin}`);
-      if (response?.sendTimeout) log('info', `  sendTimeout: ${response.sendTimeout}ms`);
-      setStatus('Session Config notification ✓', true);
-
-      // ═══ PHONE NONCE (CMD_NONCE=26) ══
-      log('info', '═══ PHONE NONCE (CMD_NONCE=26) ═══');
-      const pNonce = new Uint8Array(16);
-      crypto.getRandomValues(pNonce);
-      const phoneNoncePacket = encodeCommandPhoneNonce(pNonce);
-      const pNonceHex = hex(phoneNoncePacket);
-      log('info', `PNonce: ${hex(pNonce)}`);
-      log('sent', `PhoneNonce command: ${pNonceHex}`);
-
-      try {
-        if (wprops.writeWithoutResponse) {
-          await writeChar.writeValueWithoutResponse(phoneNoncePacket);
-        } else {
-          await writeChar.writeValue(phoneNoncePacket as any);
-        }
-        log('info', 'PhoneNonce write completed');
-      } catch (e: any) {
-        log('error', `PhoneNonce write FAILED: ${e?.message ?? e}`);
-        throw e;
-      }
-
-      let pnNotification: Uint8Array | null = null;
-      try {
-        pnNotification = await withTimeout(waitOneNotification(15000), 15000, 'phone nonce response');
-        log('recv', `PhoneNonce response: ${hex(pnNotification)}`);
-      } catch (e: any) {
-        log('error', `PhoneNonce response TIMEOUT: ${e?.message ?? e}`);
-      }
-
-      if (pnNotification) {
-        const pnParsed = SppPacketV2.decode(pnNotification);
-        if (pnParsed) {
-          log('info', `PhoneNonce response parsed: type=${SppPacketType[pnParsed.packetType]} seq=${pnParsed.sequenceNumber} channel=${pnParsed.channel} opcode=${pnParsed.opcode}`);
-          if (pnParsed.packetType === SppPacketType.DATA && pnParsed.payload.length > 0) {
-            log('info', `PhoneNonce payload: ${hex(pnParsed.payload)}`);
-            // Try to decode WatchNonce
-            const wn = decodeWatchNonce(pnParsed.payload);
-            if (wn) {
-              log('info', `WatchNonce decoded:`);
-              log('info', `  bandNonce: ${hex(wn.nonce)}`);
-              log('info', `  hmac: ${hex(wn.hmac)}`);
-
-              // ═══ AUTH STEP 3 (CMD_AUTH=27) ══
-              log('info', '═══ AUTH STEP 3 (CMD_AUTH=27) ═══');
-
-              // Get LTK from localStorage
-              const ltkStr = localStorage.getItem('be_ltk')!;
-              const ltk = new Uint8Array(16);
-              for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
-
-              // Compute auth step 3 keys (Gadgetbridge style)
-              const derived = await computeAuthStep3Hmac(ltk, pNonce, wn.nonce);
-              const decKey = derived.slice(0, 16);
-              const encKey = derived.slice(16, 32);
-              const decNonce = derived.slice(32, 36);
-              const encNonce = derived.slice(36, 40);
-
-              log('info', `Derived keys:`);
-              log('info', `  decKey: ${hex(decKey)}`);
-              log('info', `  encKey: ${hex(encKey)}`);
-              log('info', `  decNonce: ${hex(decNonce)}`);
-              log('info', `  encNonce: ${hex(encNonce)}`);
-
-              // Verify HMAC
-              const verifyData = new Uint8Array(32);
-              verifyData.set(pNonce);
-              verifyData.set(wn.nonce, 16);
-              const expectedHmac = (await hmacSha256(decKey, verifyData)).slice(0, 16);
-              log('info', `HMAC check: expected=${hex(expectedHmac)} received=${hex(wn.hmac)}`);
-
-              // Encrypt nonces (phoneNonce || watchNonce) with encKey
-              const nonces = new Uint8Array(32);
-              nonces.set(pNonce);
-              nonces.set(wn.nonce, 16);
-              const encryptedNonces = await aesCcmEncrypt(encKey, encNonce, nonces);
-              log('info', `encryptedNonces: ${hex(encryptedNonces)}`);
-
-              // Build and encrypt AuthDeviceInfo
-              const apiLevel = parseFloat((navigator.userAgentData?.platformVersion ?? '30').split('.')[0]) || 30;
-              const phoneName = navigator.userAgent || 'BandEngine';
-              const region = 'TR';
-              const deviceInfo = encodeAuthDeviceInfo(apiLevel, phoneName, region);
-              const encryptedDeviceInfo = await aesCcmEncrypt(encKey, encNonce, deviceInfo);
-              log('info', `encryptedDeviceInfo: ${hex(encryptedDeviceInfo)}`);
-
-              // Build AuthStep3
-              const authStep3 = encodeAuthStep3(encryptedNonces, encryptedDeviceInfo);
-              const authStep3Packet = encodeCommandAuthStep3(authStep3);
-
-              log('sent', `AuthStep3 command: ${hex(authStep3Packet)}`);
-
-              try {
-                if (wprops.writeWithoutResponse) {
-                  await writeChar.writeValueWithoutResponse(authStep3Packet);
-                } else {
-                  await writeChar.writeValue(authStep3Packet as any);
-                }
-                log('info', 'AuthStep3 write completed');
-              } catch (e: any) {
-                log('error', `AuthStep3 write FAILED: ${e?.message ?? e}`);
-                throw e;
-              }
-
-              let auth3Notification: Uint8Array | null = null;
-              try {
-                auth3Notification = await withTimeout(waitOneNotification(15000), 15000, 'auth step 3 response');
-                log('recv', `AuthStep3 response: ${hex(auth3Notification)}`);
-              } catch (e: any) {
-                log('error', `AuthStep3 response TIMEOUT: ${e?.message ?? e}`);
-              }
-
-              if (auth3Notification) {
-                const a3Parsed = SppPacketV2.decode(auth3Notification);
-                if (a3Parsed) {
-                  log('info', `AuthStep3 response parsed: type=${SppPacketType[a3Parsed.packetType]} seq=${a3Parsed.sequenceNumber}`);
-                  if (a3Parsed.packetType === SppPacketType.DATA && a3Parsed.payload.length > 0) {
-                    log('info', `AuthStep3 payload: ${hex(a3Parsed.payload)}`);
-                    // Check for status=1 (success)
-                    if (a3Parsed.payload[0] === 0x08 && a3Parsed.payload[1] === 0x01) {
-                      log('info', 'AUTH SUCCESS! Status=1');
-                      setStatus('Auth successful ✓', true);
-                    }
-                  }
-                }
-              }
-              setStatus('AuthStep3 sent ✓', true);
-              btnConnect.disabled = false;
-              return;
-            }
-          }
-        }
-      }
-      setStatus('PhoneNonce/WatchNonce ✓', true);
-      btnConnect.disabled = false;
-      return;
-
-    } // close session config response if
+    btnConnect.disabled = false;
 
   } catch (e: any) {
-    const msg = e?.message ?? e?.name ?? (typeof e === 'string' ? e : JSON.stringify(e));
-    log('error', `HATA: ${msg}`);
-    setStatus(`Error: ${(e as DOMException)?.code || msg}`, false);
+    log('error', `❌ Error: ${e?.message ?? e}`);
+    setStatus('Error', false);
     btnConnect.disabled = false;
   }
 }
 
-if (localStorage.getItem('be_ltk')) { showMainUI(); } else { showWizard(); ltkInput.focus(); }
-
-btnConnect.onclick = startConnect;
-
-btnHrStart.onclick = async () => {
-  try {
-    if (!writeChar || !_sessionAesKey || !_sessionCounter) throw new Error('Not authed');
-    btnHrStart.disabled = true; btnHrStop.disabled = false;
-    panelHr.style.display = 'block'; hrHistory = []; renderChart();
-    const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
-    await writeBLE(buildWearPacket(1, 3, OPCODES.HEART_RATE_SUBSCRIBE, 0, e));
-    startHrListener();
-  } catch (e: any) { log('error', `HR: ${e.message}`); }
-};
-
-btnHrStop.onclick = async () => {
-  try {
-    if (!writeChar || !_sessionAesKey || !_sessionCounter) throw new Error('Not authed');
-    btnHrStart.disabled = false; btnHrStop.disabled = true; stopHrListener();
-    const e = await aesCtrEncrypt(new Uint8Array(), _sessionAesKey, _sessionCounter!);
-    await writeBLE(buildWearPacket(1, 4, OPCODES.HEART_RATE_UNSUBSCRIBE, 0, e));
-  } catch (e: any) { log('error', `HR: ${e.message}`); }
-};
-
 btnDisconnect.onclick = () => {
-  stopHrListener(); gattServer?.disconnect();
+  gattServer?.disconnect();
   gattServer = null; writeChar = null; notifyChar = null;
-  _sessionAesKey = null; _sessionCounter = null;
+  authenticated = false; authProtocol = null;
+  sppBuffer = new Uint8Array();
   setButtons(false); setStatus('Disconnected');
-  panelBattery.style.display = 'none'; panelHr.style.display = 'none'; btnConnect.disabled = false;
 };
 
-}
+if (localStorage.getItem('be_ltk')) { showMainUI(); } else { showWizard(); ltkInput.focus(); }
+btnConnect.onclick = startConnect;

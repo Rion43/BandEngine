@@ -29,10 +29,6 @@ export class AuthenticationManager {
     this.decoder = new PacketDecoder(session);
   }
 
-  /**
-   * Run the full handshake over the BLE transport.
-   * `write` sends bytes, `onNotification` resolves on the next notify.
-   */
   async handshake(
     write: (data: Uint8Array) => Promise<void>,
     onNotification: () => Promise<Uint8Array>,
@@ -62,8 +58,6 @@ export class AuthenticationManager {
     await this.session.deriveKeys(this.longTermKey);
 
     // ── 4. Send AUTH_CONFIRM ──
-    // In the Mi Band protocol, the phone signs something with the MAC key
-    // and sends it back.  The band verifies and the session is live.
     const confirmPayload = await this.buildConfirmPayload();
     const confirmPacket = await this.encoder.encode({
       category: CATEGORIES.SYSTEM,
@@ -74,25 +68,19 @@ export class AuthenticationManager {
   }
 
   private async buildConfirmPayload(): Promise<Uint8Array> {
-    // Placeholder: the real HMAC-SHA256 signing with macKey
-    // against the concatenated nonces.
     const macKey = this.session.macKey;
-
     const data = new Uint8Array(NONCE_LENGTH * 2);
     data.set(this.session.phoneNonce!);
     data.set(this.session.bandNonce!, NONCE_LENGTH);
 
     const cryptoKey = await crypto.subtle.importKey(
-      'raw',
-      macKey,
+      'raw', macKey.buffer as ArrayBuffer,
       { name: 'HMAC', hash: 'SHA-256' },
-      false,
-      ['sign'],
+      false, ['sign'],
     );
     const sig = new Uint8Array(
-      await crypto.subtle.sign('HMAC', cryptoKey, data),
+      await crypto.subtle.sign('HMAC', cryptoKey, data.buffer as ArrayBuffer),
     );
-
     return sig.subarray(0, SIGNATURE_LENGTH);
   }
 }

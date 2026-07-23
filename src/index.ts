@@ -1,11 +1,5 @@
 // BandEngine — Xiaomi Smart Band 9 BLE protocol library
-//
-// Usage:
-//   const engine = new BandEngine(longTermKey);
-//   await engine.connect();
-//   await engine.authenticate();
-//   engine.heartRate.on('sample', (s) => console.log(s));
-//   await engine.heartRate.start();
+// SPPv2-based protocol, Gadgetbridge-compatible auth
 
 export * from './types.js';
 export { Session } from './Session.js';
@@ -16,6 +10,14 @@ export { AuthenticationManager } from './AuthenticationManager.js';
 export { BluetoothManager } from './BluetoothManager.js';
 export * from './crypto/index.js';
 export * from './services/index.js';
+
+// SPPv2 protocol modules
+export { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode, SessionConfigOpcode } from './SppPacketV2.js';
+export { SessionConfig } from './SessionConfig.js';
+export { SppAuthProtocol } from './SppAuthProtocol.js';
+export * from './SppAuthCrypto.js';
+export * from './SppAuthMessages.js';
+export { SppAckTracker } from './SppAckTracker.js';
 
 import { Session } from './Session.js';
 import { BluetoothManager } from './BluetoothManager.js';
@@ -74,20 +76,11 @@ export class BandEngine {
     );
   }
 
-  // ── Lifecycle ──
-
   async connect(): Promise<void> {
     await this.bluetooth.connect();
     this._connected = true;
   }
 
-  /**
-   * Run the full authentication handshake.
-   * 1. Phone sends nonce
-   * 2. Band replies with nonce + signature
-   * 3. Keys derived via HKDF
-   * 4. Confirmation sent back
-   */
   async authenticate(): Promise<void> {
     await this.auth.handshake(
       (d) => this.bluetooth.write(d),

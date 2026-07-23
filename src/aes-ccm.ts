@@ -1,8 +1,14 @@
 // AES-CCM using asmcrypto.js (Bouncy Castle-compatible)
 // Gadgetbridge uses Bouncy Castle CCMBlockCipher with macSize=32, nonce=12B
 
-// @ts-ignore - asmcrypto.js types not resolving with bundler mode
+// @ts-ignore - types not resolving with bundler mode
 import * as AsmCrypto from 'asmcrypto.js';
+
+const CCM: any = AsmCrypto?.AES_CCM;
+
+if (!CCM || typeof CCM.encrypt !== 'function') {
+  throw new Error('AES-CCM: asmcrypto.js AES_CCM not found');
+}
 
 /**
  * AES-CCM encrypt (Gadgetbridge Bouncy Castle-compatible).
@@ -22,8 +28,6 @@ export function aesCcmEncrypt(
   new DataView(nonce.buffer).setUint32(8, counter, true);
 
   try {
-    // asmcrypto AES_CCM.encrypt(data, key, nonce, adata, tagSize)
-    const CCM = (AsmCrypto as any).AES_CCM;
     const result = CCM.encrypt(data, key, nonce, undefined, 4);
     return new Uint8Array(result);
   } catch (e) {

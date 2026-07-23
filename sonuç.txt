@@ -1,0 +1,241 @@
+# BandEngine vs Gadgetbridge — Eksiksiz Karşılaştırma Raporu
+
+Tarih: 2026-07-23
+Kaynak: Gadgetbridge (codeberg.org/Freeyourgadget/Gadgetbridge) kaynak kodu
+Hedef: Xiaomi Smart Band 9 (FE95 service, SPPv2 protokolü)
+
+---
+
+## ✅ AYNI OLANLAR
+
+| Bileşen | BandEngine | Gadgetbridge | Kanıt (Dosya:Satır) |
+|---------|------------|--------------|---------------------|
+| FE95 Service UUID | `0000fee0...` (YANLIŞ) | `0000fe95...` | XiaomiUuids.java:29 |
+| Opcode: PhoneNonce | AUTH_INIT=26 | CMD_NONCE=26 | XiaomiAuthService.java:67 |
+| Opcode: AuthResponse | AUTH_RESPONSE=27 | CMD_AUTH=27 | XiaomiAuthService.java:68 |
+| PhoneNonce uzunluğu | 16 byte | 16 byte | buildNonceCommand() |
+| WatchNonce yapısı | bandNonce + signature | nonce + hmac | xiaomi.proto:56-59 |
+| HKDF info string | "miwear-auth" | "miwear-auth" | XiaomiAuthService.java:261 |
+| AES key uzunluğu | 16 byte | 16 byte | encryptionKey array |
+| Secret key kaynağı | longTermKey (16B) | authKey (16B hex) | XiaomiAuthService.java:292-310 |
+| Protobuf field tag | phoneNonce=1 | phoneNonce=1 | xiaomi.proto:52-54 |
+
+---
+
+## ❌ FARKLI OLANLAR (KRİTİK)
+
+### 1. Characteristic Ataması — **TAM TERS**
+
+| Yön | BandEngine (YANLIŞ) | Gadgetbridge (DOĞRU) | Kanıt |
+|-----|---------------------|----------------------|-------|
+| **Write (TX)** | `005E` | `005F` | XiaomiUuids.java:31 |
+| **Notify (RX)** | `005F` | `005E` | XiaomiUuids.java:30 |
+
+> **Etki:** Write 005E'ye gidiyor → band hiçbir paket almiyor. Notify 005F'den bekleniyor → band 005E'den gönderiyor.
+
+---
+
+### 2. Protokol Formatı — **FARKLI KATMAN**
+
+| Katman | BandEngine | Gadgetbridge |
+|--------|------------|--------------|
+| **Wire format** | WearPacket: `[cmd, id, type, which_payload, payload]` | SPPv2: `[0xA5, 0xA5, flags, seq, len, checksum, payload]` |
+| **Packet types** | Yok | `ACK(1)`, `SESSION_CONFIG(2)`, `DATA(3)` |
+| **Data channels** | Yok | `ProtobufCommand(1)`, `Data(2)`, `Activity(5)` |
+
+**Kanıt:**
+- `XiaomiSppPacketV2.java:32-38` — preamble `0xA5 0xA5`, packet types
+- `XiaomiSppPacketV2.java:256-390` — DataPacket channels ve opcodes
+- `XiaomiBleProtocolV2.java:341-349` — `encodePacket()` her payload'ı SPPv2'ye sarar
+
+---
+
+### 3. Auth Flow — **EKSİK ADIM: SESSION CONFIG**
+
+| Aşama | BandEngine | Gadgetbridge |
+|-------|------------|--------------|
+| 1. Connect + notify | ✅ | ✅ |
+| 2. **Session Config (OPCODE=1)** | ❌ YOK | ✅ XiaomiBleProtocolV2.java:86-93 |
+| 3. PhoneNonce (CMD_NONCE=26) | ✅ (ama WearPacket) | ✅ buildNonceCommand() |
+| 4. WatchNonce + HMAC | ✅ | ✅ handleWatchNonce() |
+| 5. AuthStep3 (CMD_AUTH=27) | ✅ (buildConfirmPayload) | ✅ handleWatchNonce() return |
+| 6. Status=1 → success | ❌ Yok | ✅ handleCommand:148 |
+
+**Sıralama (Gadgetbridge):**
+```
+XiaomiBleProtocolV2.initializeDevice():
+  1. MTU request (512)
+  2. Notify enable (btCharacteristicRead)
+  3. Session Config gönder (OPCODE_START_SESSION_REQUEST=1)
+  4. setDeviceState(AUTHENTICATING)
+  5. startEncryptedHandshake() → PhoneNonce gönder
+```
+
+**Kanıt:**
+- `XiaomiBleProtocolV2.java:86-93` — Session Config gönderimi
+- `XiaomiBleProtocolV2.java:258` — `handleVersionPacket()` içinde `startEncryptedHandshake()` çağrılır
+- `XiaomiSppPacketV2.java:87-159` — SessionConfigPacket payload: version, max_frame_size, tx_win, send_timeout
+
+---
+
+### 4. Kriptografi — **FARKLI ALGORİTMA**
+
+| Özellik | BandEngine | Gadgetbridge |
+|---------|------------|--------------|
+| **KDF** | HKDF-HMAC-SHA256 (RFC 5869) | Custom HMAC expansion loop |
+| **Şifreleme (V1)** | AES-128-CTR | **AES-CCM** (CCMBlockCipher) |
+| **Şifreleme (V2)** | AES-128-CTR | AES-CTR (encryptV2/decryptV2) |
+| **MAC** | HMAC-SHA256 ayrı key | CCM içinde (V1), ayrı HMAC (V2) |
+| **Nonce/IV** | 16-byte counter | 4-byte + 4-byte + counter (CCM) |
+
+**Kanıt:**
+- `XiaomiAuthService.java:258-290` — `computeAuthStep3Hmac` custom expansion
+- `XiaomiAuthService.java:333-352` — `encrypt/decrypt` → `CCMBlockCipher`
+- `XiaomiAuthService.java:365-391` — `encryptV2/decryptV2` → AES-CTR (V2 cihazlar için)
+
+---
+
+### 5. Protobuf Mesaj Yapısı
+
+| Mesaj | BandEngine | Gadgetbridge |
+|-------|------------|--------------|
+| **İlk gönderilen** | `HandshakeInit { phoneNonce }` (WearPacket) | `Command(type=1, subtype=26, auth={phoneNonce})` (SPPv2 DATA packet) |
+| **Band yanıtı** | `HandshakeResponse { bandNonce, signature }` | `Command(type=1, subtype=26, auth={watchNonce{nonce,hmac}})` |
+| **Phone yanıtı** | `signature` (HMAC) | `Command(type=1, subtype=27, auth={authStep3{encryptedNonces, encryptedDeviceInfo}})` |
+
+**Kanıt:** `xiaomi.proto:40-69` — `Auth`, `PhoneNonce`, `WatchNonce`, `AuthStep3`, `AuthDeviceInfo`
+
+---
+
+### 6. AuthStep3 Yapısı (BandEngine'de YOK)
+
+```protobuf
+message AuthStep3 {
+  required bytes encryptedNonces = 1;      // HMAC(encryptionKey, phoneNonce || watchNonce)
+  required bytes encryptedDeviceInfo = 2;  // AES-CCM/AuthDeviceInfo
+}
+
+message AuthDeviceInfo {
+  required uint32 unknown1 = 1;        // 0
+  required float phoneApiLevel = 2;    // Build.VERSION.SDK_INT
+  required string phoneName = 3;       // Build.MODEL
+  required uint32 unknown3 = 4;        // 224
+  required string region = 5;          // 2-letter upper case (TR, US, etc.)
+}
+```
+
+**Kanıt:** `XiaomiAuthService.java:218-242` — `handleWatchNonce()` içinde oluşturulur.
+
+---
+
+## ⚠️ EKSİK IMPLEMENTASYONLAR (BandEngine'de YOK)
+
+| # | Eksik | Dosya:Satır | Etki |
+|---|-------|-------------|------|
+| 1 | **Session Config paketi** | XiaomiBleProtocolV2.java:86-93 | Band protokolü başlatmaz, auth paketi reddedilir |
+| 2 | **SPPv2 paketleme** | XiaomiSppPacketV2.java:32, 427-437 | Band WearPacket parse etmez, silent drop |
+| 3 | **ACK mekanizması** | XiaomiSppPacketV2.java:36-38, 261-268 | Paket kaybında retry yok, deadlock |
+| 4 | **Channel routing** | XiaomiChannelHandler.java:20-27 | Protobuf/Data/Activity ayrımı yok |
+| 5 | **AES-CCM (V1)** | XiaomiAuthService.java:333-352 | Decrypt başarısız → notification parse edemez |
+| 6 | **AuthStep3** | XiaomiAuthService.java:199-242 | Sadece HMAC yetmez, şifreli nonce'lar + device info gerekli |
+| 7 | **DeviceInfo alanları** | xiaomi.proto:71-77 | `AuthDeviceInfo` (region, model, API level) gerekli |
+
+---
+
+## 🎯 TIMEOUT'UN NEDENİ ZİNCİRİ
+
+```
+1. Characteristic YANLIŞ (Write=005E, Notify=005F)
+   → Paket band'a GİTMEZ / Band'dan GELMEZ
+   │
+2. SPPv2 Frame YOK (Preamble A5 A5, packet type, checksum)
+   → Paket band'a GİDER ama ANLAŞILMAZ → Silent drop
+   │
+3. Session Config YOK (OPCODE_START_SESSION_REQUEST=1)
+   → Band "session" açmaz, Version response GÖNDERMEZ
+   │
+4. handleVersionPacket() ÇAĞRILMAZ
+   → startEncryptedHandshake() ÇAĞRILMAZ
+   │
+5. PhoneNonce GÖNDERİLMEZ
+   → 3 Aşamalı Auth BAŞLAMAZ
+   │
+6. WatchNonce GELMEZ (notification asla gelmez)
+   │
+SONUÇ: 15sn timeout (hiçbir notification gelmez)
+```
+
+---
+
+## 📋 ÖNCELİK SIRALAMASI (UYGULAMA SIRASI)
+
+| Sıra | Madde | Neden İlk? | Kanıt | Timeout'a Etki |
+|------|-------|------------|-------|----------------|
+| **1** | **Characteristic Swap** (Write=005F, Notify=005E) | En basit, 2 satır, sıfır risk. Bu olmazsa hiçbir paket hareket etmez. | XiaomiUuids.java:30-31 | **DOĞRUDAN** — Paket gitmez/gelmez |
+| **2** | **SPPv2 Frame Wrapper** (Preamble A5 A5, packet type, seq, len, checksum) | Characteristic düzeltildikten sonra band paketi anlamalı. Tüm protobuf komutları SPPv2 DATA packet içinde gider. | XiaomiSppPacketV2.java:32, 427-437 | **DOĞRUDAN** — Paket anlaşılmaz, silent drop |
+| **3** | **Session Config Gönderimi** (OPCODE_START_SESSION_REQUEST=1) | SPPv2 çalışınca ilk gönderilmesi gereken paket. Bu tetiklenmezse `startEncryptedHandshake()` asla çağrılmaz. | XiaomiBleProtocolV2.java:86-93, 258 | **DOĞRUDAN** — Auth flow'u başlatmaz |
+| **4** | **3 Aşamalı Auth Flow** (PhoneNonce → WatchNonce → AuthStep3) | Yukarıdakiler çalışınca doğal olarak akar. Gadgetbridge'de zaten hazır. | XiaomiAuthService.java:88-242 | **DOLAYLI** — Auth tamamlanmaz, sonraki işlemler timeout |
+| **5** | **AES-CCM (V1) / AES-CTR V2** | Band 9 V2 protokolü kullanıyorsa `encryptV2` (AES-CTR) yeterli olabilir. V1 cihazlar için CCM gerekli. | XiaomiAuthService.java:333-391 | **DOLAYLI** — Decrypt başarısız → parse hatası |
+| **6** | **ACK/Chunk Mekanizması** | Büyük payload'lar için. İlk auth paketleri küçük, ACK tek paket (type 2) yeterli. | XiaomiSppPacketV2.java:261-268, 370-377 | **SONRAKİ** — İlk auth etkilemez |
+
+---
+
+## 🔧 BANDENGINE'DE DEĞİŞTİRİLMESİ GEREKEN DOSYALAR
+
+### 1. `src/types.ts` — Characteristic UUID'leri
+```typescript
+// YANLIŞ:
+WRITE_CHAR: '0000fee1-0000-1000-8000-00805f9b34fb',
+NOTIFY_CHAR: '0000fee2-0000-1000-8000-00805f9b34fb',
+
+// DOĞRU (Gadgetbridge FE95 V2):
+WRITE_CHAR: '0000005f-0000-1000-8000-00805f9b34fb',  // TX = 005F
+NOTIFY_CHAR: '0000005e-0000-1000-8000-00805f9b34fb',  // RX = 005E
+```
+
+### 2. `src/BluetoothManager.ts` — Characteristic ataması
+Satır 38-44: `getCharacteristic()` çağrıları yukarıdaki UUID'leri kullanmalı.
+
+### 3. Yeni: `src/SppPacketV2.ts` — SPPv2 frame encode/decode
+- Preamble: `[0xA5, 0xA5]`
+- Packet types: ACK=1, SESSION_CONFIG=2, DATA=3
+- Channels: Authentication=1, ProtobufCommand=1, Data=2, Activity=5
+- Opcode: PLAINTEXT=1, ENCRYPTED=2
+- CRC-16/ARC checksum
+
+### 4. Yeni: `src/SessionConfig.ts` — Session Config paketi
+```typescript
+// OPCODE_START_SESSION_REQUEST = 1
+// Payload: version(3B), max_frame_size(2B), tx_win(2B), send_timeout(2B)
+```
+
+### 5. `src/AuthenticationManager.ts` — Auth flow güncelleme
+- `handshake()` içinde: önce Session Config gönder → response bekle → PhoneNonce
+- `CMD_NONCE=26`, `CMD_AUTH=27` kullan
+- `AuthStep3` protobuf oluştur (encryptedNonces + encryptedDeviceInfo)
+- AES-CCM veya AES-CTR V2 kullan
+
+### 6. `src/ProtoSerializer.ts` — Protobuf şeması güncelleme
+`xiaomi.proto` dosyasından `Command`, `Auth`, `PhoneNonce`, `WatchNonce`, `AuthStep3`, `AuthDeviceInfo` ekle.
+
+---
+
+## 📝 SONUÇ
+
+**BandEngine şu an tamamen farklı bir protokol (WearPacket) konuşuyor.** Gadgetbridge ve Mi Band 9 **SPPv2** konuşuyor. Bu nedenle:
+
+1. Band **hiçbir paketi anlamıyor** → silent drop
+2. **Hiçbir notification gelmiyor** → 15sn timeout
+3. Auth flow'una **hiç ulaşmıyor** (Session Config → PhoneNonce → WatchNonce → AuthStep3)
+
+**İlk 3 madde (Characteristic, SPPv2 Frame, Session Config) uygulanmadan BAŞKA HİÇBİR ŞEY ÇALIŞMAZ.**
+
+Bu 3 madde uygulandığında:
+- Band `A5 A5 ...` preamble'li paketleri anlar
+- Session Config response döner → `handleVersionPacket` tetiklenir
+- `startEncryptedHandshake()` çağrılır → PhoneNonce gider
+- Band `WatchNonce + HMAC` döner (notification gelir!)
+- `AuthStep3` gönderilir → `status=1` → `encryptionInitialized=true`
+- **Auth başarılı olur**
+
+Sonraki aşamalar (AES-CCM, ACK, chunk) sadece güvenilirlik ve büyük veri için gerekli.

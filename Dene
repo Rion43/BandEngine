@@ -1,0 +1,70 @@
+BandEngine klasörü içinde bulunan "Gadgetbridge-master" klasörünü referans implementasyon olarak kullan.
+
+İnternetten araştırma yapma.
+
+Sadece bu klasördeki kaynak kodu incele.
+
+Görevin:
+
+BandEngine ile Gadgetbridge'in Xiaomi Smart Band 9 (veya en yakın Xiaomi protobuf implementasyonu) authentication akışını satır satır karşılaştırmak.
+
+Öncelikle Gadgetbridge-master içinde aşağıdakileri bul:
+
+- Xiaomi Smart Band 9
+- Mi Band 9
+- Xiaomi protobuf
+- FE95
+- Authentication
+- Pairing
+- Session key
+- HKDF
+- AES
+- phoneNonce
+- bandNonce
+- WearPacket
+- Protobuf
+- Opcode
+- 005E
+- 005F
+
+Bulduğun dosyaları listele.
+
+Ardından auth akışını çıkar.
+
+Özellikle cevapla:
+
+1. İlk BLE write hangi fonksiyonda yapılıyor?
+
+2. İlk gönderilen protobuf mesajı nedir?
+
+3. WearPacket nasıl oluşturuluyor?
+
+4. İlk opcode nedir?
+
+5. HKDF tam olarak ne zaman çalışıyor?
+
+6. BandNonce hangi paketten geliyor?
+
+7. İlk notification nasıl işleniyor?
+
+8. BandEngine ile satır satır karşılaştır.
+
+9. Farklı olan her satırı göster.
+
+10. Timeout'a sebep olabilecek farkları önem sırasına göre sırala.
+
+Kod değiştirme.
+
+Tahmin yapma.
+
+Önce analiz yap.
+
+Sonunda bana şu formatta rapor ver:
+
+✅ Aynı olanlar
+
+❌ Farklı olanlar
+
+⚠️ Eksik implementasyonlar
+
+🎯 Timeout'un en olası nedeni (kanıtıyla birlikte)

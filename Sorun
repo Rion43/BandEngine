@@ -1,0 +1,39 @@
+Ready.
+[01:08:39.242] ═══ CONNECT ═══
+[01:08:40.674] Device: Xiaomi Smart Band 9 0A4B [37289745-671D-53BE-E9C1-7311D2D8325D]
+[01:08:40.683] GATT connected
+[01:08:40.700] 6 services
+[01:08:40.704] 0050
+[01:08:40.705] read=true write=false writeWithoutResponse=false notify=false indicate=false
+[01:08:40.705] 005E
+[01:08:40.705] read=false write=false writeWithoutResponse=true notify=true indicate=false
+[01:08:40.707] 005F
+[01:08:40.707] read=false write=false writeWithoutResponse=true notify=true indicate=false
+[01:08:40.854] 0001
+[01:08:40.855] read=true write=false writeWithoutResponse=false notify=false indicate=false
+[01:08:40.855] 0002
+[01:08:40.856] read=false write=false writeWithoutResponse=true notify=true indicate=false
+[01:08:40.856] 0003
+[01:08:40.856] read=false write=false writeWithoutResponse=true notify=true indicate=false
+[01:08:40.975] 4A02
+[01:08:40.977] read=true write=true writeWithoutResponse=false notify=true indicate=false
+[01:08:43.985] CC353442-BE58-4EA2-876E-11D8D6976366: skip
+[01:08:46.990] 180A: skip
+[01:08:49.994] 180F: skip
+[01:08:49.998] W:005E N:005F
+[01:08:50.000] W-props: R=false W=false WW=true N=true
+[01:08:50.015] ═══ AUTH ═══
+[01:08:50.020] PNonce: (16B) ab 69 25 9c 57 de 02 e8 67 55 ac e9 ea 10 ed 45
+[01:08:50.021] AUTH_INIT: (22B) 01 00 1a 00 0a 10 ab 69 25 9c 57 de 02 e8 67 55 ac e9 ea 10 ed 45 (22B)
+[01:08:50.021] write API: writeValueWithoutResponse
+[01:08:50.027] Write completed
+[01:09:05.032] ═══ DEBUG REPORT ═══
+[01:09:05.034] Characteristic UUID : 005E
+[01:09:05.036] Properties : R=false W=false WW=true N=true I=false
+[01:09:05.037] Write method : writeValueWithoutResponse
+[01:09:05.038] AUTH_INIT hex : (22B) 01 00 1a 00 0a 10 ab 69 25 9c 57 de 02 e8 67 55 ac e9 ea 10 ed 45
+[01:09:05.041] Bytes written : 22B
+[01:09:05.042] Notifications : error: Timeout 15000ms
+[01:09:05.043] Disconnect reason : Timeout 15000ms
+[01:09:05.044] ═══════════════════════
+[01:09:05.044] HATA: Timeout 15000ms

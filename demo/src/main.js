@@ -4,7 +4,7 @@ import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
-const VERSION = '5.1-plaintext-test';
+const VERSION = '5.3-asmcrypto-ctr';
 const $ = (id) => document.getElementById(id);
 const btnConnect = $('btn-connect');
 const btnDisconnect = $('btn-disconnect');
@@ -341,25 +341,23 @@ async function startConnect() {
             log('info', '🎉  AUTH SUCCESS!');
             setStatus('✓ Authenticated', true);
             setButtons(true);
-            // ═══ AUTH SONRASI: DeviceInfo (SEND_PLAINTEXT) ═══
-            log('info', '═══ POST-AUTH: SEND DEVICE INFO ═══');
+            log("info", "═══ POST-AUTH: ENCRYPTED DEVICE INFO ═══");
             try {
                 const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
-                log('info', `DeviceInfo cmd: ${toHex(cmd)}`);
-                const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_PLAINTEXT, cmd);
-                log('sent', `SPPv2 (${spp.length}B): ${hexLog(spp)}`);
+                log("info", "DeviceInfo cmd: " + toHex(cmd));
+                const enc = authProtocol.encryptV2(cmd);
+                log("info", "Encrypted: " + toHex(enc));
+                const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+                log("sent", "SPPv2 (" + spp.length + "B): " + hexLog(spp));
                 await writeBLE(spp);
                 await new Promise(r => setTimeout(r, 5000));
-                log('info', `Queue: ${notifyQueue.length}, SPP buf: ${sppBuffer.length}B`);
+                log("info", "Queue: " + notifyQueue.length + ", SPP buf: " + sppBuffer.length + "B");
                 for (let i = 0; i < notifyQueue.length; i++) {
-                    log('recv', `Q[${i}](${notifyQueue[i].length}B): ${hexLog(notifyQueue[i])}`);
-                }
-                if (sppBuffer.length > 0) {
-                    log('info', `SPPbuf: ${hexLog(sppBuffer)}`);
+                    log("recv", "Q[" + i + "](" + notifyQueue[i].length + "B): " + hexLog(notifyQueue[i]));
                 }
             }
             catch (be) {
-                log('error', `Post: ${be?.message ?? be}`);
+                log("error", "Post: " + (be?.message ?? be));
             }
         }
         else {

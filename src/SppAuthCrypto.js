@@ -25,9 +25,30 @@ export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
     return out;
 }
 export { aesCcmEncrypt } from './aes-ccm.js';
-import { AES_CTR } from "asmcrypto.js";
+import { AES_ECB } from "asmcrypto.js/dist_es8/aes/ecb.js";
 export function aesCtrEncrypt(data, key) {
-    return new Uint8Array(AES_CTR.encrypt(data, key, key));
+    // Manual CTR mode: encrypt counter block, XOR with data
+    // Gadgetbridge: Cipher("AES/CTR/NoPadding"), key=key, iv=key
+    const blockSize = 16;
+    const counter = new Uint8Array(blockSize);
+    counter.set(key, 0); // initial counter = key
+    const result = new Uint8Array(data.length);
+    const ecb = new AES_ECB(key, false);
+    const encryptedCounter = new Uint8Array(blockSize);
+    for (let offset = 0; offset < data.length; offset += blockSize) {
+        const enc = AES_ECB.encrypt(counter, key);
+        encryptedCounter.set(enc, 0);
+        const chunkEnd = Math.min(offset + blockSize, data.length);
+        for (let i = offset; i < chunkEnd; i++) {
+            result[i] = data[i] ^ encryptedCounter[i - offset];
+        }
+        // increment counter (big-endian)
+        for (let i = blockSize - 1; i >= 0; i--) {
+            if (++counter[i] !== 0)
+                break;
+        }
+    }
+    return result;
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 export async function verifyWatchHmac(decKey, watchNonce, phoneNonce, receivedHmac) {

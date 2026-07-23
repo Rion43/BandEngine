@@ -45,10 +45,9 @@ export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
   const counter = new Uint8Array(blockSize);
   counter.set(key, 0);  // initial counter = key
   const result = new Uint8Array(data.length);
-  const ecb = new AES_ECB(key, false);
   const encryptedCounter = new Uint8Array(blockSize);
   for (let offset = 0; offset < data.length; offset += blockSize) {
-    const enc = AES_ECB.encrypt(counter, key);
+    const enc = AES_ECB.encrypt(counter, key, false);
     encryptedCounter.set(enc, 0);
     const chunkEnd = Math.min(offset + blockSize, data.length);
     for (let i = offset; i < chunkEnd; i++) {

@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.4-manual-ctr';
+const VERSION = '5.5-ecb-nopadding';
 
 const $ = (id: string) => document.getElementById(id)!;
 

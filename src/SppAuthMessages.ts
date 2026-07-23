@@ -189,7 +189,39 @@ export function encodeCommandAuthStep3(authStep3: Uint8Array): Uint8Array {
 
 export interface AuthResponse { status: number; success: boolean; }
 
+/** Extract subtype (field 2, varint) from Command */
+function getSubtype(payload: Uint8Array): number | null {
+  let i = 0;
+  while (i < payload.length) {
+    const tag = readVarint(payload, i);
+    if (!tag) return null;
+    const fn = tag.value >> 3, wt = tag.value & 0x07;
+    i = tag.next;
+    if (fn === 2 && wt === 0) {
+      const v = readVarint(payload, i);
+      if (!v) return null;
+      return v.value;
+    }
+    if (wt === 0) { const v = readVarint(payload, i); if (!v) return null; i = v.next; }
+    else if (wt === 1) { i += 8; }
+    else if (wt === 2) { const len = readVarint(payload, i); if (!len) return null; i = len.next + len.value; }
+    else if (wt === 5) { i += 4; }
+    else return null;
+  }
+  return null;
+}
+
+/**
+ * Decode auth response from Command payload.
+ * Success = subtype=27 (CMD_AUTH) OR auth.status=1 (Gadgetbridge rule)
+ */
 export function decodeAuthResponse(payload: Uint8Array): AuthResponse | null {
+  const subtype = getSubtype(payload);
+  if (subtype !== null && subtype === 27) {
+    // CMD_AUTH response = always success (Gadgetbridge rule)
+    return { status: 1, success: true };
+  }
+
   const authBytes = findField(payload, 3);
   if (!authBytes) {
     if (payload.length >= 2 && payload[0] === 0x08) return { status: payload[1], success: payload[1] === 1 };

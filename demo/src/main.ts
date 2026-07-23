@@ -1,10 +1,8 @@
 import './style.css';
-import { log, hex } from './logger.js';
-import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode, SessionConfigOpcode } from '../../src/SppPacketV2.js';
-import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
-import { toHex } from '../../src/SppAuthMessages.js';
+import { log, hex as hexLog } from './logger.js';
+import { SppPacketV2, SppPacketType } from '../../src/SppPacketV2.js';
 
-const VERSION = '3.0-sppv2-auth';
+const VERSION = '3.0-asama2';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -25,27 +23,21 @@ versionBadge.textContent = `v${VERSION}`;
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
-let authProtocol: SppAuthProtocol | null = null;
-let authenticated = false;
 
-// SPPv2 reassembly
+// SPPv2 buffer
 let sppBuffer = new Uint8Array();
-let authResolve: ((p: Uint8Array | null) => void) | null = null;
 let notifyQueue: Uint8Array[] = [];
-let notifyResolve: ((p: Uint8Array) => void) | null = null;
+let notifyResolve: ((d: Uint8Array) => void) | null = null;
 
-// ── Persistent BLE notification handler ──
+// ── Persistent BLE handler ──
 function onBleNotify(this: BluetoothRemoteGATTCharacteristic, event: Event) {
-  const value = new Uint8Array((event.target as EventTarget as unknown as BluetoothRemoteGATTCharacteristic).value!.buffer);
-
-  // Push to one-shot waiter
+  const value = new Uint8Array((event.target as unknown as BluetoothRemoteGATTCharacteristic).value!.buffer);
   if (notifyResolve) { notifyResolve(value); notifyResolve = null; }
   else { notifyQueue.push(value); }
-
-  // Also feed SPPv2 reassembly
   feedSpp(value);
 }
 
+// ── SPPv2 reassembly ──
 function feedSpp(data: Uint8Array) {
   const merged = new Uint8Array(sppBuffer.length + data.length);
   merged.set(sppBuffer);
@@ -62,54 +54,51 @@ function processSpp() {
         if (sppBuffer[i] === 0xa5 && sppBuffer[i + 1] === 0xa5) { next = i; break; }
       }
       if (next < 0) { sppBuffer = new Uint8Array(); return; }
-      console.warn(`skip ${next}B before preamble`);
+      log('warn', `skip ${next}B non-SPP bytes`);
       sppBuffer = sppBuffer.slice(next);
     }
     const size = SppPacketV2.getExpectedPacketSize(sppBuffer);
     if (size === null || sppBuffer.length < size) return;
     const bytes = sppBuffer.slice(0, size);
     sppBuffer = sppBuffer.slice(size);
-    const packet = SppPacketV2.decode(bytes);
-    if (!packet) continue;
-    handleSppPacket(packet);
+    const pkt = SppPacketV2.decode(bytes);
+    if (!pkt) continue;
+    handleSpp(pkt);
   }
 }
 
-function handleSppPacket(packet: import('../../src/SppPacketV2.js').ParsedPacket) {
-  const tn = SppPacketType[packet.packetType] || `?`;
-  log('recv', `SPP ${tn} seq=${packet.sequenceNumber} len=${packet.payload.length}`);
+function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
+  const tn = SppPacketType[pkt.packetType] || `?`;
+  log('recv', `SPP ${tn} seq=${pkt.sequenceNumber} len=${pkt.payload.length}`);
 
-  switch (packet.packetType) {
+  switch (pkt.packetType) {
     case SppPacketType.SESSION_CONFIG:
-      if (packet.configOpcode === SessionConfigOpcode.START_SESSION_RESPONSE) {
-        const r = SppPacketV2.parseSessionConfigResponse(packet.configData ?? packet.payload);
-        log('info', `📋 Session Config:`);
-        if (r?.version) log('info', `  version: ${r.version.join('.')}`);
-        if (r?.maxPacketSize) log('info', `  maxPacketSize: ${r.maxPacketSize}`);
-        if (r?.txWin) log('info', `  txWin: ${r.txWin}`);
-        if (r?.sendTimeout) log('info', `  sendTimeout: ${r.sendTimeout}ms`);
-        setStatus('Session Config ✓', true);
+      log('recv', `SESSION_CONFIG raw: ${hexLog(pkt.configData ?? pkt.payload)}`);
+      if (pkt.configOpcode === 2) {
+        const r = SppPacketV2.parseSessionConfigResponse(pkt.configData ?? pkt.payload);
+        if (r) {
+          log('info', `📋 Session Config Response:`);
+          if (r.version) log('info', `  version: ${r.version.join('.')}`);
+          if (r.maxPacketSize) log('info', `  maxPacketSize: ${r.maxPacketSize}`);
+          if (r.txWin) log('info', `  txWin: ${r.txWin}`);
+          if (r.sendTimeout) log('info', `  sendTimeout: ${r.sendTimeout}ms`);
+          setStatus('Session Config ✓', true);
+        }
       }
       break;
 
-    case SppPacketType.DATA: {
-      void writeBLE(SppPacketV2.buildAck(packet.sequenceNumber));
-      const ch = SppChannel[packet.channel ?? -1] ?? '?';
-      log('recv', `DATA ch=${ch} payload=${hex(packet.payload)}`);
-      if (packet.payload.length > 0 && authResolve) {
-        authResolve(packet.payload);
-        authResolve = null;
-      }
+    case SppPacketType.DATA:
+      writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
+      log('recv', `DATA payload(${pkt.payload.length}B): ${hexLog(pkt.payload)}`);
       break;
-    }
+
     case SppPacketType.ACK:
-      log('info', `🔁 ACK seq=${packet.sequenceNumber}`);
+      log('info', `ACK seq=${pkt.sequenceNumber}`);
       break;
   }
 }
 
 // ── Wait helpers ──
-
 function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
   return new Promise((resolve, reject) => {
     if (notifyQueue.length > 0) { resolve(notifyQueue.shift()!); return; }
@@ -118,23 +107,13 @@ function waitOneNotification(timeoutMs: number): Promise<Uint8Array> {
   });
 }
 
-function waitAuthPayload(timeoutMs: number): Promise<Uint8Array | null> {
-  return new Promise((resolve) => {
-    if (authResolve) authResolve(null);
-    const t = setTimeout(() => { authResolve = null; log('warn', `⏱ Auth timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
-    authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
-  });
-}
-
-// ── BLE write ──
-
 async function writeBLE(data: Uint8Array) {
   if (!writeChar) throw new Error('no writeChar');
-  const buf = data.slice().buffer as ArrayBuffer;
+  const ab = data.slice().buffer as ArrayBuffer;
   if (writeChar.properties.writeWithoutResponse) {
-    await writeChar.writeValueWithoutResponse(buf);
+    await writeChar.writeValueWithoutResponse(ab);
   } else {
-    await writeChar.writeValue(buf);
+    await writeChar.writeValue(ab);
   }
 }
 
@@ -143,7 +122,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 }
 
 // ── UI ──
-
 function showWizard() { wizard.style.display = ''; mainUI.style.display = 'none'; }
 function showMainUI() { wizard.style.display = 'none'; mainUI.style.display = ''; }
 function setStatus(text: string, ok?: boolean) {
@@ -168,14 +146,13 @@ ltkInput.addEventListener('input', () => {
 btnSaveKey.addEventListener('click', () => {
   if (!/^[0-9a-f]{32}$/i.test(ltkInput.value)) {
     wizardStatus.className = 'wizard-status error';
-    wizardStatus.innerHTML = '❌ 32 karakter hex girin';
-    wizardStatus.style.display = 'block'; return;
+    wizardStatus.innerHTML = '❌ 32 hex karakter girin'; wizardStatus.style.display = 'block'; return;
   }
   localStorage.setItem('be_ltk', ltkInput.value.toLowerCase());
   wizardStatus.className = 'wizard-status success';
   wizardStatus.innerHTML = '✅ Key saved';
   wizardStatus.style.display = 'block';
-  setTimeout(() => { showMainUI(); startConnect(); }, 1500);
+  setTimeout(() => { showMainUI(); }, 1500);
 });
 
 $('btn-settings').addEventListener('click', () => {
@@ -192,13 +169,14 @@ $('btn-settings').addEventListener('click', () => {
   modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
 });
 
-// ── Main ──
+// ── MAIN CONNECT (AŞAMA 2: Session Config only) ──
 
 async function startConnect() {
   try {
     setStatus('Pairing…'); btnConnect.disabled = true;
-    log('info', '═══ CONNECT ═══');
+    log('info', '═══ AŞAMA 2: CONNECT + SESSION CONFIG ═══');
     sppBuffer = new Uint8Array();
+    notifyQueue = [];
 
     const device = await withTimeout(
       navigator.bluetooth.requestDevice({
@@ -214,75 +192,61 @@ async function startConnect() {
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'chars');
     const char5e = chars.find(c => c.uuid.includes('005e'));
     const char5f = chars.find(c => c.uuid.includes('005f'));
-    if (!char5e || !char5f) throw new Error('005E/005F not found');
+    if (!char5e || !char5f) throw new Error('005E/005F bulunamadi');
 
     writeChar = char5f;
     notifyChar = char5e;
     log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
+    log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse} N=${!!writeChar.properties.notify}`);
 
-    // Persistent listener (one listener, one handler)
+    // Persistent listener
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
     await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
 
     // ═══ SESSION CONFIG ═══
-    log('info', '═══ SESSION CONFIG ═══');
+    log('info', '═══ SEND START_SESSION_REQUEST ═══');
     SppPacketV2.resetSequence();
     const sessPkt = SppPacketV2.buildSessionConfigRequest();
-    log('sent', `Session Config (${sessPkt.length}B): ${hex(sessPkt)}`);
+    log('sent', `Session Config (${sessPkt.length}B) HEX: ${hexLog(sessPkt)}`);
     await writeBLE(sessPkt);
+
+    log('info', 'Waiting for Session Config response...');
+    setStatus('Waiting for band...');
 
     // Wait for first notification
     try {
-      const n = await withTimeout(waitOneNotification(15000), 15000, 'session');
+      const n = await withTimeout(waitOneNotification(15000), 15000, 'session config');
+      log('recv', `First notification (${n.length}B) HEX: ${hexLog(n)}`);
       feedSpp(n);
+      // Wait a bit more for reassembly
+      await new Promise(r => setTimeout(r, 1000));
+      // Try to get more data
+      let more = true;
+      while (more) {
+        try {
+          const extra = await withTimeout(waitOneNotification(2000), 2000, 'extra');
+          log('recv', `Extra notification (${extra.length}B) HEX: ${hexLog(extra)}`);
+          feedSpp(extra);
+        } catch { more = false; }
+      }
     } catch (e: any) {
-      log('error', `Session Config: ${e.message}`);
+      log('error', `❌ Session Config: ${e.message}`);
+      setStatus('Session Config failed', false);
+      btnConnect.disabled = false;
+      return;
     }
-    await new Promise(r => setTimeout(r, 400));
 
-    // ═══ AUTH: PhoneNonce (CMD_NONCE=26) ═══
-    log('info', '═══ AUTH ═══');
-    const ltkStr = localStorage.getItem('be_ltk')!;
-    const ltk = new Uint8Array(16);
-    for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+    log('info', '═══ SESSION CONFIG DONE ═══');
+    log('info', 'İlk notification alındı. SPPv2 oturum başarılı.');
+    log('info', 'Bir sonraki adım: AŞAMA 3 (Version Response Parser)');
 
-    authProtocol = new SppAuthProtocol(ltk);
-    const { packet: pnPkt } = authProtocol.buildPhoneNonce();
-    const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPkt);
-    log('sent', `PhoneNonce DATA: ${hex(sppPn)}`);
-    await writeBLE(sppPn);
-
-    const wnPayload = await waitAuthPayload(10000);
-    if (!wnPayload) { log('error', '❌ No WatchNonce'); setStatus('No WatchNonce response', false); btnConnect.disabled = false; return; }
-    log('recv', `WatchNonce (${wnPayload.length}B): ${toHex(wnPayload)}`);
-
-    const step3 = await authProtocol.processWatchNonce(wnPayload);
-    if (!step3) { log('error', '❌ WatchNonce fail'); setStatus('WatchNonce decode failed', false); btnConnect.disabled = false; return; }
-
-    // AuthStep3 (CMD_AUTH=27)
-    log('info', '═══ AUTH STEP 3 ═══');
-    const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
-    log('sent', `AuthStep3 DATA: ${hex(sppA3)}`);
-    await writeBLE(sppA3);
-
-    const authPayload = await waitAuthPayload(10000);
-    if (!authPayload) { log('error', '❌ No auth result'); setStatus('Auth result timeout', false); btnConnect.disabled = false; return; }
-
-    const ok = authProtocol.processAuthResponse(authPayload);
-    if (ok) {
-      authenticated = true;
-      log('info', '🎉 AUTH SUCCESS!');
-      setStatus('✓ Authenticated', true);
-      setButtons(true);
-    } else {
-      log('error', '❌ AUTH FAIL');
-      setStatus('✗ Auth failed', false);
-    }
+    setStatus('Session Config OK', true);
+    setButtons(true);
     btnConnect.disabled = false;
 
   } catch (e: any) {
-    log('error', `❌ Error: ${e?.message ?? e}`);
+    log('error', `❌ HATA: ${e?.message ?? e}`);
     setStatus('Error', false);
     btnConnect.disabled = false;
   }
@@ -291,7 +255,6 @@ async function startConnect() {
 btnDisconnect.onclick = () => {
   gattServer?.disconnect();
   gattServer = null; writeChar = null; notifyChar = null;
-  authenticated = false; authProtocol = null;
   sppBuffer = new Uint8Array();
   setButtons(false); setStatus('Disconnected');
 };

@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '3.6-asmcrypto';
+const VERSION = '4.0-auth-final';
 
 const $ = (id: string) => document.getElementById(id)!;
 

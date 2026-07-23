@@ -1,0 +1,81 @@
+STOP.
+
+Authentication artık tamamlandı.
+
+Loglar gösteriyor ki:
+
+✓ Session Config
+✓ Version
+✓ PhoneNonce
+✓ WatchNonce
+✓ AuthStep3
+✓ Auth Success
+
+Auth koduna artık hiçbir değişiklik yapma.
+
+Yeni hedef:
+
+Band gerçekten kullanılabiliyor mu bunu doğrulamak.
+
+Önce Gadgetbridge-master'ı incele.
+
+Band 9 için authentication sonrasında gönderilen ilk gerçek komutları bul.
+
+Öncelik sırası:
+
+1.
+Battery Level oku.
+
+2.
+Device Info oku.
+
+3.
+Firmware Version oku.
+
+4.
+Current Time oku.
+
+5.
+Find Phone komutu gönder.
+
+6.
+Vibration komutu gönder.
+
+Kurallar:
+
+- Yeni auth kodu yazma.
+- Session Config koduna dokunma.
+- AES koduna dokunma.
+- SPPv2 koduna dokunma.
+
+Sadece Gadgetbridge'deki auth sonrası ilk komutları BandEngine'e taşı.
+
+Her komut için:
+
+- kullanılan protobuf
+- opcode
+- channel
+- packet
+- response
+
+ayrı ayrı loglansın.
+
+İlk hedef:
+
+Battery Request gönder.
+
+Band cevap verirse:
+
+✓ AUTH gerçekten tamamlanmıştır.
+
+Battery çalışmadan sonraki adıma geçme.
+
+Eğer Battery cevap vermezse:
+
+Kod yazmayı durdur.
+
+Önce Gadgetbridge ile gönderilen paketi byte-byte karşılaştır.
+
+Tahmin etme.
+
+Her byte farkını raporla.

@@ -9,10 +9,11 @@
     "prepare": "tsc"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.2.0",
     "protobufjs": "^7.4.0"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
   }
 }

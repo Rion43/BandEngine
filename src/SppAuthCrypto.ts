@@ -34,25 +34,7 @@ export async function computeAuthStep3Hmac(
   return out;
 }
 
-function buildCcmNonce(encNonce: Uint8Array, counter: number): Uint8Array {
-  const n = new Uint8Array(12);
-  n.set(encNonce, 0);
-  n.set([0, 0, 0, 0], 4);
-  new DataView(n.buffer).setUint32(8, counter, true);
-  return n;
-}
-
-export async function aesCcmEncrypt(
-  key: Uint8Array, encNonce: Uint8Array, data: Uint8Array, counter = 0,
-): Promise<Uint8Array> {
-  const nonce = buildCcmNonce(encNonce, counter);
-  const k = await crypto.subtle.importKey('raw', ab(key), { name: 'AES-CCM' }, false, ['encrypt']);
-  const enc = await crypto.subtle.encrypt(
-    { name: 'AES-CCM', nonce: ab(nonce), tagLength: 32 } as any,
-    k, ab(data),
-  );
-  return new Uint8Array(enc);
-}
+export { aesCcmEncrypt } from './aes-ccm.js';
 
 export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
   const k = await crypto.subtle.importKey('raw', ab(key), { name: 'AES-CTR' }, false, ['encrypt', 'decrypt']);

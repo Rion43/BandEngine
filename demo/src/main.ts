@@ -342,29 +342,36 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ AUTH SONRASI (Gadgetbridge sırasıyla) ═══
-      log('info', '═══ POST-AUTH: SET CURRENT TIME ═══');
+      // ═══ AUTH SONRASI: Device Info (SEND_PLAINTEXT ile dene) ═══
+      log('info', '═══ POST-AUTH: DEVICE INFO (PLAINTEXT) ═══');
       try {
-        // Gadgetbridge: systemService.setCurrentTime() ilk cagri
-        // Command{type=2, subtype=3, system{clock{time{hour,min,sec,ms},date{year,month,day},tz,isNot24Hour}}}
-        // Once minimal command dene (sadece type+subtype)
-        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]);
-        log('info', `Clock cmd (${cmd.length}B): ${toHex(cmd)}`);
-        const enc = await authProtocol!.encryptV2(cmd);
-        log('info', `Encrypted (${enc.length}B): ${toHex(enc)}`);
-        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-        log('sent', `Clock SPPv2 (${spp.length}B): ${hexLog(spp)}`);
-        const resp = await sendAndWaitAuth(spp, 8000, 'Clock');
+        // Encrypted calismiyor, once plaintext dene
+        // Command{type=2, subtype=2} — minimal device info istegi
+        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
+        log('info', `DeviceInfo cmd (${cmd.length}B): ${toHex(cmd)}`);
+        // Authentication channel ile SEND_PLAINTEXT dene (encrypted degil)
+        const spp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, cmd);
+        log('sent', `DeviceInfo SPPv2 plain (${spp.length}B): ${hexLog(spp)}`);
+        const resp = await sendAndWaitAuth(spp, 8000, 'DeviceInfo');
         if (resp) {
-          log('recv', `Clock response (${resp.length}B): ${toHex(resp)}`);
-          try { const dec = await authProtocol!.decryptV2(resp); log('info', `Decrypted (${dec.length}B): ${toHex(dec)}`); }
-          catch(e:any) { log('warn', `Decrypt: ${e.message}`); }
+          log('recv', `DeviceInfo response (${resp.length}B): ${toHex(resp)}`);
+          // response plaintext ise decrypt gerekmez
         } else {
-          log('warn', 'No clock response');
-          // SURE: async/await sırası düzgün, ama authResolve race var mı?
-          // sendAndWaitAuth önce handler kurar, sonra write yapar. ✓
+          log('warn', 'No device info response');
+          // Encrypted dene
+          log('info', 'Trying encrypted clock...');
+          const clockCmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]);
+          const enc = await authProtocol!.encryptV2(clockCmd);
+          const sppEnc = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+          log('sent', `Clock encrypted SPPv2 (${sppEnc.length}B): ${hexLog(sppEnc)}`);
+          const respEnc = await sendAndWaitAuth(sppEnc, 8000, 'ClockEnc');
+          if (respEnc) {
+            log('recv', `Clock response raw (${respEnc.length}B): ${toHex(respEnc)}`);
+            try { const dec = await authProtocol!.decryptV2(respEnc); log('info', `Decrypted (${dec.length}B): ${toHex(dec)}`); }
+            catch(e:any) { log('warn', `Decrypt: ${e.message}`); }
+          } else { log('warn', 'No encrypted response'); }
         }
-      } catch (be: any) { log('error', `Post-auth err: ${be?.message ?? be}`); }
+      } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

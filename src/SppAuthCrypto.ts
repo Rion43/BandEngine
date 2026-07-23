@@ -36,7 +36,7 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-import { AES_CTR } from "asmcrypto.js";
+import { AES_CTR } from "asmcrypto.js/dist_es8/aes/ctr.js";
 
 export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
   return new Uint8Array(AES_CTR.encrypt(data, key, key));

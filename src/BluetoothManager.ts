@@ -38,7 +38,6 @@ export class BluetoothManager implements BluetoothTransport {
   // Version (AŞAMA 3)
   private _versionValidated = false;
   private _onVersionReady?: () => void;
-  private _onVersionData?: (payload: Uint8Array) => void;
 
   async connect(): Promise<void> {
     const device = await navigator.bluetooth.requestDevice({
@@ -114,11 +113,6 @@ export class BluetoothManager implements BluetoothTransport {
     if (this._versionValidated) handler();
   }
 
-  /** Version DATA handler (AŞAMA 3) */
-  onVersionData(handler: (payload: Uint8Array) => void): void {
-    this._onVersionData = handler;
-  }
-
   /** SPPv2 DataPacket gönder */
   async sendDataPacket(channel: SppChannel, payload: Uint8Array): Promise<void> {
     const opcode = getOpCodeForChannel(channel);
@@ -138,7 +132,7 @@ export class BluetoothManager implements BluetoothTransport {
     this.sessionConfigSent = false;
     this.sessionConfigConfirmed = false;
     this.sessionConfigResponse = null;
-    this._onVersionData = undefined;
+    this._versionValidated = false;
   }
 
   // ── Private ──
@@ -159,8 +153,8 @@ export class BluetoothManager implements BluetoothTransport {
         this._onVersionReady?.();
         this._onVersionReady = undefined;
       } else {
-        console.warn(`[SessionConfig] Version not available or incomplete: ${JSON.stringify(response.version)}`);
-        // Yine de devam et (Gadgetbridge gibi)
+        // Gadgetbridge gibi: version yoksa da auth başlat
+        console.warn(`[SessionConfig] Version not available: ${JSON.stringify(response.version)} — proceeding`);
         this._versionValidated = true;
         this._onVersionReady?.();
         this._onVersionReady = undefined;
@@ -238,12 +232,6 @@ export class BluetoothManager implements BluetoothTransport {
         const opname = SppDataOpcode[packet.opcode ?? SppDataOpcode.UNKNOWN] || '?';
         console.log(`[BT] << DATA ch=${chname} op=${opname} payload(${packet.payload.length}B)`);
         console.log(`[BT] << HEX: ${toHex(packet.payload)}`);
-
-        // Version channel? (AŞAMA 3 için)
-        if (packet.channel === SppChannel.PROTOBUF_COMMAND && this._onVersionData) {
-          this._onVersionData(packet.payload);
-          this._onVersionData = undefined;
-        }
 
         this.sppPacketHandler?.(packet);
         break;

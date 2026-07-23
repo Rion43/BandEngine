@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '4.6-clock-gadgetbridge';
+const VERSION = '4.8-post-auth';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -342,35 +342,37 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ AUTH SONRASI: Device Info (SEND_PLAINTEXT ile dene) ═══
-      log('info', '═══ POST-AUTH: DEVICE INFO (PLAINTEXT) ═══');
+      // ═══ AUTH SONRASI: Encrypted commands (Gadgetbridge gibi) ═══
+      log('info', '═══ POST-AUTH: DEVICE INFO + BATTERY ═══');
       try {
-        // Encrypted calismiyor, once plaintext dene
-        // Command{type=2, subtype=2} — minimal device info istegi
-        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
-        log('info', `DeviceInfo cmd (${cmd.length}B): ${toHex(cmd)}`);
-        // Authentication channel ile SEND_PLAINTEXT dene (encrypted degil)
-        const spp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, cmd);
-        log('sent', `DeviceInfo SPPv2 plain (${spp.length}B): ${hexLog(spp)}`);
-        const resp = await sendAndWaitAuth(spp, 8000, 'DeviceInfo');
-        if (resp) {
-          log('recv', `DeviceInfo response (${resp.length}B): ${toHex(resp)}`);
-          // response plaintext ise decrypt gerekmez
-        } else {
-          log('warn', 'No device info response');
-          // Encrypted dene
-          log('info', 'Trying encrypted clock...');
-          const clockCmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]);
-          const enc = await authProtocol!.encryptV2(clockCmd);
-          const sppEnc = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-          log('sent', `Clock encrypted SPPv2 (${sppEnc.length}B): ${hexLog(sppEnc)}`);
-          const respEnc = await sendAndWaitAuth(sppEnc, 8000, 'ClockEnc');
-          if (respEnc) {
-            log('recv', `Clock response raw (${respEnc.length}B): ${toHex(respEnc)}`);
-            try { const dec = await authProtocol!.decryptV2(respEnc); log('info', `Decrypted (${dec.length}B): ${toHex(dec)}`); }
-            catch(e:any) { log('warn', `Decrypt: ${e.message}`); }
-          } else { log('warn', 'No encrypted response'); }
+        // Gadgetbridge initialize(): her service.initialize() async cagrilir
+        // Biz de response beklemeden gonderelim
+        const cmds = [
+          { name: 'DeviceInfo', subtype: 2 },
+          { name: 'Battery', subtype: 1 },
+        ];
+        for (const c of cmds) {
+          const cmd = new Uint8Array([0x08, 0x02, 0x10, c.subtype]);
+          log('info', `${c.name} cmd: ${toHex(cmd)}`);
+          const enc = await authProtocol!.encryptV2(cmd);
+          log('info', `${c.name} enc: ${toHex(enc)}`);
+          const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+          await writeBLE(spp);
+          log('sent', `${c.name} sent (${spp.length}B)`);
+          await new Promise(r => setTimeout(r, 200));
         }
+
+        // 3 saniye bekle, gelen notification'lari topla
+        await new Promise(r => setTimeout(r, 3000));
+        let count = 0;
+        while (true) {
+          try {
+            const n = await withTimeout(waitOneNotification(2000), 2000, `resp-${count}`);
+            feedSpp(n);
+            count++;
+          } catch { break; }
+        }
+        log('info', `Received ${count} total notifications`);
       } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
     } else {
       log('error', '✗  AUTH FAILED');

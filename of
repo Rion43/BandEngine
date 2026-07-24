@@ -1,0 +1,64 @@
+Authentication is already fully working.
+
+Current sequence:
+
+CONNECT
+↓
+DISCOVER SERVICES
+↓
+ENABLE NOTIFICATIONS
+↓
+SESSION_CONFIG
+↓
+PHONE_NONCE
+↓
+WATCH_NONCE
+↓
+AUTH_SUCCESS
+
+Immediately after AUTH_SUCCESS the Xiaomi Smart Band 9 disconnects after about 70-100ms, even if absolutely NO encrypted packets are sent.
+
+This proves that:
+
+- HKDF is correct.
+- AES is correct.
+- SessionConfig is correct.
+- Protobuf is correct.
+- Authentication is correct.
+
+Do NOT analyze cryptography.
+
+Your only goal is to find the exact lifecycle difference between Gadgetbridge and BandEngine.
+
+Search the entire repository and produce evidence for:
+
+1. Does Gadgetbridge ever receive a disconnect immediately after AUTH_SUCCESS?
+   If yes:
+   - show the exact code path
+   - show why reconnect works
+   - show how encryption state is preserved
+
+2. Trace every callback executed after AUTH_SUCCESS until the first normal command.
+
+3. Determine whether Gadgetbridge expects:
+   - onCharacteristicWrite
+   - onDescriptorWrite
+   - onMtuChanged
+   before continuing.
+
+4. Determine whether Web Bluetooth lacks any mandatory Android callback.
+
+5. Search for every delayed Runnable, Handler, Executor, Timer or queued task that starts after AUTH_SUCCESS.
+
+6. Verify whether BandEngine must reconnect automatically after AUTH_SUCCESS.
+
+7. Search for ANY hidden handshake, ACK, keepalive or initialization packet that happens after authentication but before Clock synchronization.
+
+8. Ignore protocol decoding completely.
+Focus only on Bluetooth lifecycle and state machine.
+
+Output ONLY confirmed findings with file names, line numbers and code paths.
+
+Do not speculate.
+
+BİR YERDE BAĞLANTIYI TUTMAYAN BİŞEY VAR BAĞLANTI KURULUYOR AMA DEVAMI YOK BUL ARTIK BUL BELKİ BLUEFY DE SORUNLU OLABİLİR

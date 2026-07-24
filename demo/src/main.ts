@@ -8,7 +8,7 @@ import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystem
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod-v2';
+const VERSION = '6.0-gbmod-v3';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -439,18 +439,6 @@ $('btn-settings').addEventListener('click', () => {
 
 async function startConnect() {
   try {
-    // GB MOD seciliyse direkt GB flow'a git
-    if (selectedTest === 14) {
-      const gbHandle = new GBDeviceHandle();
-      const dev = await navigator.bluetooth.requestDevice({
-        filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
-        optionalServices: [],
-      });
-      await gbFullFlow(gbHandle, dev, setStatus);
-      btnConnect.disabled = false;
-      return;
-    }
-
     setStatus('Pairing…'); btnConnect.disabled = true;
     log('info', '═══ FULL AUTH FLOW ═══');
     sppBuffer = new Uint8Array(); notifyQueue = [];
@@ -581,7 +569,27 @@ btnDisconnect.onclick = () => {
 };
 
 if (localStorage.getItem('be_ltk')) { showMainUI(); } else { showWizard(); ltkInput.focus(); }
-btnConnect.onclick = startConnect;
+
+// GB MOD icin ayri baglanti butonu
+btnConnect.onclick = async () => {
+  if (selectedTest === 14) {
+    const gbHandle = new GBDeviceHandle();
+    try {
+      btnConnect.disabled = true;
+      log('info', '═══ GB MOD START ═══');
+      const dev = await navigator.bluetooth.requestDevice({
+        filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
+        optionalServices: [],
+      });
+      await gbFullFlow(gbHandle, dev, setStatus);
+    } catch (e: any) {
+      log('error', `GB MOD error: ${e?.message ?? e}`);
+    }
+    btnConnect.disabled = false;
+  } else {
+    await startConnect();
+  }
+};
 initTestSelector();
 
 function toHex(bytes: Uint8Array): string {

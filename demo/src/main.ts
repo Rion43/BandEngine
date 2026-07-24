@@ -8,7 +8,7 @@ import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystem
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod';
+const VERSION = '6.0-gbmod-v2';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -65,6 +65,7 @@ $('diag-toggle').addEventListener('click', () => {
   }
 });
 
+let selectedDevice: BluetoothDevice | null = null;
 let gattServer: BluetoothRemoteGATTServer | null = null;
 let writeChar: BluetoothRemoteGATTCharacteristic | null = null;
 let notifyChar: BluetoothRemoteGATTCharacteristic | null = null;
@@ -261,7 +262,7 @@ const TEST_NAMES: Record<number, string> = {
   11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
   12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
   13: 'TEST 13: Reconnect sonrasi Clock',
-  14: 'GADGETBRIDGE MOD: full GB flow (autoReconnect + init services)',
+  14: 'GB MOD: full GB flow + autoReconnect',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -379,13 +380,13 @@ async function runPostAuth(): Promise<void> {
       }
     }
   } else if (test === 14) {
+    // GB MOD: startConnect'te secilen device'i kullan
+    if (!selectedDevice) { log('error', 'No device selected'); return; }
     const gbHandle = new GBDeviceHandle();
-    // GB MOD kendi requestDevice'ini yap, mevcut baglantiyi kullanma
-    const dev = await navigator.bluetooth.requestDevice({
-      filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
-      optionalServices: [],
-    });
-    await gbFullFlow(gbHandle, dev, setStatus);
+    if (gattServer) { try { gattServer.disconnect(); } catch {} }
+    // Kisa bekle, baglantinin tam kapanmasini bekle
+    await new Promise(r => setTimeout(r, 500));
+    await gbFullFlow(gbHandle, selectedDevice, setStatus);
   }
 
   log('info', `========== ${tname} END ==========`);
@@ -452,6 +453,7 @@ async function startConnect() {
         filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
         optionalServices: [],
       }), 30000, 'requestDevice');
+    selectedDevice = device;
     log('info', `Device: ${device.name ?? '?'}`);
     if (!device.gatt) throw new Error('gatt null');
 

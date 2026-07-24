@@ -1,0 +1,179 @@
+Gadgetbridge Baglanti Analizi — BandEngine ile Farklar
+======================================================
+Tarih: 2026-07-24
+Kaynak: Gadgetbridge master branch, Xiaomi Band 9 (XiaomiBleProtocolV2)
+
+================================================================
+1. GADGETBRIDGE BAGLANTI AKISI (kronolojik sira)
+================================================================
+
+1.1. BtLEQueue.connect() -> connectImp() -> gatt.connect()
+    BtLEQueue.java:292-368
+    - BluetoothDevice.connectGatt(context, false, callback, TRANSPORT_LE, phyMask, handler)
+    - onConnectionStateChange -> STATE_CONNECTED
+
+1.2. Service Discovery (300ms gecikme ile)
+    BtLEQueue.java:644-661
+    - STATE_CONNECTED olduktan sonra 300ms bekle (getServiceDiscoveryDelay)
+    - getServices() cache kontrol -> yoksa discoverServices()
+    - cache varsa direkt onServicesDiscovered() cagir
+    - **BandEngine: 0ms bekleme, direkt getPrimaryService()**
+
+1.3. onServicesDiscovered -> XiaomiBleSupport.initializeDevice()
+    XiaomiBleSupport.java:65-81
+    -> XiaomiBleProtocolV2.initializeDevice()
+
+    TransactionBuilder icindeki action sirasi (BleProtocolV2.java:81-93):
+        1. builder.requestMtu(512)              <- MTU iste
+        2. builder.setDeviceState(INITIALIZING)  <- state degisikligi
+        3. builder.notify(char, true)            <- notification enable (CCCD yaz)
+        4. builder.setDeviceState(AUTHENTICATING)
+        5. writeChunks(SessionConfig seq=0)      <- SessionConfig
+
+    **BandEngine: startNotifications() -> SessionConfig. requestMtu YOK. State management YOK.**
+
+1.4. Her action -> callback bekle -> sonraki action
+    BtLEQueue.java:188-197
+    action.run(gatt)                         -> writeCharacteristic / requestMtu
+    if (action.expectsResult()) {             -> WriteAction = true, RequestMtuAction = true
+        mWaitForActionResultLatch.await()    -> BLOKE
+    }
+    -> callback gelince latch countDown     -> sonraki action baslar
+
+    **BandEngine: callback beklemez. Promise resolve -> sonraki write.**
+
+----------------------------------------------------------------
+
+2. KRITIK FARKLAR
+================================================================
+
+2.1. MTU NEGOTIATION (requestMtu)
+    - GDB: requestMtu(512) -> onMtuChanged -> maxWriteSize = calcMaxWriteChunk(mtu)
+    - BE: YOK. Web Bluetooth MTU isteyemez.
+    - SessionConfig icinde MAX_PACKET_SIZE=64512 var, band bunu kullaniyor olabilir.
+    - MTU istegi eksik olsa bile SessionConfig calisiyor (auth basarili).
+
+2.2. SERVICE DISCOVERY GECIKMESI
+    - GDB: STATE_CONNECTED -> 300ms bekle -> discoverServices
+    - BE: GATT baglan -> 0ms -> getPrimaryService
+    - BE 300ms daha erken. Auth daha hizli biter, disconnect daha erken olur.
+
+2.3. WRITE CALLBACK ZINCIRI (en onemli fark)
+    - GDB: her writeCharacteristic onCharacteristicWrite callback'ini bekler
+      Bu ~10-30ms ek gecikme ekler
+      WriteAction.expectsResult() = her zaman true
+      RequestMtuAction.expectsResult() = true
+    - BE: writeValueWithoutResponse callback yok, promise resolve -> hemen sonraki
+    - GDB: Write sirasi: SessionConfig -> callback -> PhoneNonce -> callback -> AuthStep3 -> callback
+    - BE: Write sirasi: SessionConfig -> PhoneNonce -> AuthStep3 (arada callback beklemez)
+
+2.4. CCCD DESCRIPTOR WRITE
+    - GDB: builder.notify(char, true) -> TransactionBuilder'da action
+      -> descriptor write -> onDescriptorWrite callback bekle
+    - BE: startNotifications() -> Web Bluetooth otomatik CCCD yazar, callback yok
+
+2.5. CONNECTION PRIORITY
+    - GDB: requestConnectionPriority(HIGH) (default)
+    - BE: Yok
+
+2.6. PHY AYARLARI
+    - GDB: connectGatt(TRANSPORT_LE, phyMask)
+    - BE: device.gatt.connect() -> default
+
+2.7. STATE MANAGEMENT
+    - GDB: INITIALIZING -> AUTHENTICATING -> INITIALIZED (setDeviceState)
+    - BE: Yok
+
+----------------------------------------------------------------
+
+3. DISCONNECT SONRASI DAVRANIS
+================================================================
+
+3.1. GDB: BtLEQueue.handleDisconnected (BtLEQueue.java:402-486)
+    - Status 0x81/0x85/0x08/0x93 -> forceDisconnect (baglantiyi kapat)
+    - Status normal (0) + autoReconnect=true + mBluetoothGatt!=null
+      -> gatt.connect() ile hemen YENIDEN BAGLAN (reconnect)
+      -> state korunur (encryptionInitialized=true)
+      -> notification'lar otomatik kalir
+      -> encrypted iletisim devam
+    - mBluetoothGatt==null + autoReconnect=true
+      -> WAITING_FOR_RECONNECT state (gecikmeli yeniden baglanma)
+
+3.2. BE:
+    - device.addEventListener('gattserverdisconnected')
+    - status kodu alamayiz (Web Bluetooth limitasyonu)
+    - device.gatt.connect() ile reconnect (yeni baglanti)
+    - notification'lari yeniden enable etmek gerekir
+
+3.3. **BAND ~70ms SONRA KENDISI DISCONNECT EDIYOR**
+    - Gadgetbridge'de de disconnect oluyor
+    - Ama GDB reconnect olup devam ediyor
+    - BE reconnect OLMADIGI icin baglanti olu kalıyor
+
+----------------------------------------------------------------
+
+4. BANDENGINE'E EKSIKSIZ EKLENMESI GEREKENLER
+================================================================
+
+4.1. autoReconnect:
+    - disconnect event'inde device.gatt.connect() dene
+    - basarili olursa:
+      - startNotifications() yeniden enable et
+      - auth state korunur (encryptionInitialized=true)
+      - encrypted paketlere devam et
+
+4.2. Service init sirasi (GDB'deki gibi):
+    1. Clock (setCurrentTime) - type=2, subtype=3
+    2. System init:
+       - DeviceInfo (type=2, subtype=2)
+       - DeviceState (type=2, subtype=78)
+       - Battery (type=2, subtype=1)
+       - Password (type=2, subtype=9)
+       - DisplayItems (type=2, subtype=29)
+       - CameraRemote (type=2, subtype=7)
+       - Widgets (type=2, subtype=51)
+       - WidgetParts (type=2, subtype=53)
+       - WorkoutTypes (type=2, subtype=39)
+    3. Health init:
+       - UserInfo (type=8, subtype=0)
+       - SPO2 (type=8, subtype=8)
+       - HR (type=8, subtype=10)
+       - StandingReminder (type=8, subtype=12)
+       - Stress (type=8, subtype=14)
+       - GoalNotif (type=8, subtype=21)
+       - Goals (type=8, subtype=42)
+       - Vitality (type=8, subtype=35)
+    4. Notification init (type=7, subtype=0)
+    5. Schedule init (type=17)
+    6. Weather init (type=10)
+    7. Calendar sync (type=12)
+
+4.3. MTU (Web Bluetooth'ta mumkun degil):
+    - SessionConfig icindeki MAX_PACKET_SIZE=64512 yeterli olabilir
+
+4.4. Service Discovery gecikmesi (Web Bluetooth'ta mumkun degil):
+    - Etkisi ihmal edilebilir
+
+----------------------------------------------------------------
+
+5. OZET
+================================================================
+
+Gadgetbridge ile BandEngine arasindaki TEK ONEMLI FARK:
+    AUTO RECONNECT + WRITE CALLBACK ZINCIRI
+
+Gadgetbridge:
+    Her write callback bekler -> surekli baglanti kontrolu
+    Disconnect olursa -> aninda reconnect -> state korunur
+
+BandEngine:
+    Callback beklemez -> baglanti koptugunu gec fark eder
+    Reconnect yok -> baglanti olu olur
+
+Band ~1sn sonra KENDILIGINDEN disconnect ediyor.
+Bu NORMAL band davranisi. Gadgetbridge'de de oluyor.
+Fark: Gadgetbridge reconnect olup devam ediyor.
+BandEngine reconnect OLMADIGI icin baglanti olu kalıyor.
+
+COZUM: autoReconnect sistemi calisiyor mu diye TEST 14'u dene.
+================================================================

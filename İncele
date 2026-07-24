@@ -1,0 +1,72 @@
+We are reverse engineering Xiaomi Smart Band 9 BLE protocol.
+
+Authentication already succeeds.
+
+Current behavior:
+
+CONNECT
+↓
+DISCOVER SERVICES
+↓
+ENABLE NOTIFICATIONS
+↓
+SESSION CONFIG
+↓
+PHONE NONCE
+↓
+WATCH NONCE
+↓
+AUTH SUCCESS
+↓
+Device disconnects after ~70-100ms even when absolutely NO encrypted packet is sent afterwards.
+
+This means the disconnect is NOT caused by Clock sync, Battery, DeviceInfo or encrypted protobuf packets.
+
+Your task is NOT to analyze cryptography.
+
+Instead, perform a deep architectural analysis of Gadgetbridge.
+
+Focus on every operation performed between:
+
+BluetoothGatt.connect()
+
+and
+
+first encrypted command after AUTH SUCCESS.
+
+Inspect every class involved.
+
+Especially investigate:
+
+- requestMtu()
+- onMtuChanged()
+- maxWriteSize
+- TransactionBuilder
+- BtLEQueue
+- write ordering
+- descriptor writes
+- CCCD handling
+- notification enable sequence
+- internal state machine
+- AUTH SUCCESS callbacks
+- post-auth initialization
+- delayed Runnable/Handler callbacks
+- watchdog timers
+- connection priority
+- PHY changes
+- service discovery ordering
+- descriptor callback ordering
+
+Find ANY behavior that BandEngine running in Web Bluetooth might be missing.
+
+Ignore protocol decoding.
+
+Ignore protobuf.
+
+Ignore HKDF.
+
+Ignore AES.
+
+Ignore authentication.
+
+Search only for lifecycle differences between Android BluetoothGatt implementation and BandEngine.

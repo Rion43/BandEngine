@@ -380,7 +380,12 @@ async function runPostAuth(): Promise<void> {
     }
   } else if (test === 14) {
     const gbHandle = new GBDeviceHandle();
-    await gbFullFlow(gbHandle, setStatus);
+    // GB MOD kendi requestDevice'ini yap, mevcut baglantiyi kullanma
+    const dev = await navigator.bluetooth.requestDevice({
+      filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
+      optionalServices: [],
+    });
+    await gbFullFlow(gbHandle, dev, setStatus);
   }
 
   log('info', `========== ${tname} END ==========`);

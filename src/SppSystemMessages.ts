@@ -1,102 +1,95 @@
 // SppSystemMessages — Gadgetbridge-style System/Clock protobuf messages
-// Birebir xiaomi.proto + XiaomiSystemService.java
+// protobufjs kullanir, xiaomi.proto ile birebir Gadgetbridge protobuf
 
-function encodeVarint(val: number): Uint8Array {
-  if (val < 0x80) return new Uint8Array([val]);
-  const bytes: number[] = [];
-  while (val >= 0x80) { bytes.push((val & 0x7f) | 0x80); val >>>= 7; }
-  bytes.push(val & 0x7f);
-  return new Uint8Array(bytes);
+import protobuf from 'protobufjs';
+
+// Proto defs — Gadgetbridge xiaomi.proto (sadece ihtiyac duyulan kisim)
+const PROTO_DEF = `
+syntax = "proto2";
+package xiaomi;
+
+message Command {
+  required uint32 type = 1;
+  optional uint32 subtype = 2;
+  optional System system = 4;
 }
 
-function tag(fieldNum: number, wireType: number): Uint8Array {
-  return encodeVarint((fieldNum << 3) | wireType);
+message System {
+  optional Clock clock = 4;
 }
 
-function lenDel(fieldNum: number, data: Uint8Array): Uint8Array {
-  const t = tag(fieldNum, 2);
-  const l = encodeVarint(data.length);
-  const out = new Uint8Array(t.length + l.length + data.length);
-  out.set(t, 0);
-  out.set(l, t.length);
-  out.set(data, t.length + l.length);
-  return out;
+message Clock {
+  required Date date = 1;
+  required Time time = 2;
+  required TimeZone timezone = 3;
+  optional bool isNot24hour = 4;
 }
 
-function varint(fieldNum: number, val: number): Uint8Array {
-  const t = tag(fieldNum, 0);
-  const v = encodeVarint(val);
-  const out = new Uint8Array(t.length + v.length);
-  out.set(t, 0);
-  out.set(v, t.length);
-  return out;
+message Date {
+  required uint32 year = 1;
+  required uint32 month = 2;
+  required uint32 day = 3;
 }
 
-function sint32(fieldNum: number, val: number): Uint8Array {
-  const zigzag = (val << 1) ^ (val >> 31);
-  return varint(fieldNum, zigzag >>> 0);
+message Time {
+  required uint32 hour = 1;
+  required uint32 minute = 2;
+  optional uint32 second = 3;
+  optional uint32 millisecond = 4;
 }
 
-function boolF(fieldNum: number, val: boolean): Uint8Array {
-  return varint(fieldNum, val ? 1 : 0);
+message TimeZone {
+  optional sint32 zoneOffset = 1;
+  optional sint32 dstOffset = 2;
+  required string name = 3;
+}
+`;
+
+const root = protobuf.parse(PROTO_DEF).root;
+const Command = root.lookupType('xiaomi.Command');
+const Clock = root.lookupType('xiaomi.Clock');
+
+function buildDate(now: Date): any {
+  return { year: now.getFullYear(), month: now.getMonth() + 1, day: now.getDate() };
 }
 
-function concat(...arrays: Uint8Array[]): Uint8Array {
-  const totalLen = arrays.reduce((s, a) => s + a.length, 0);
-  const out = new Uint8Array(totalLen);
-  let off = 0;
-  for (const a of arrays) { out.set(a, off); off += a.length; }
-  return out;
+function buildTime(now: Date): any {
+  return { hour: now.getHours(), minute: now.getMinutes(), second: now.getSeconds(), millisecond: now.getMilliseconds() };
 }
 
-/**
- * Encode Command{type=2, subtype=3, system{clock{date,time,timezone,isNot24hour}}}
- * Birebir XiaomiSystemService.setCurrentTime() + xiaomi.proto
- */
+function buildTimezone(): any {
+  const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const offsetMin = -new Date().getTimezoneOffset();
+  return { zoneOffset: Math.round(offsetMin / 15), dstOffset: 0, name: tzName };
+}
+
 export function encodeCommandClock(): Uint8Array {
   const now = new Date();
-  const tzName = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const tzBytes = new TextEncoder().encode(tzName);
-  const offsetMin = -now.getTimezoneOffset();
-  const zoneOff = Math.round(offsetMin / 15); // 15-min blocks
+  const clockMsg = Clock.create({
+    date: buildDate(now),
+    time: buildTime(now),
+    timezone: buildTimezone(),
+    isNot24hour: false,
+  });
+  const msg = Command.create({ type: 2, subtype: 3, system: { clock: clockMsg } });
+  const buf = Command.encode(msg).finish();
+  console.log(`[SystemMessages] Clock protobufjs (${buf.length}B): ${toHex(buf)}`);
+  return buf;
+}
 
-  // Date { year=1, month=2, day=3 }
-  const dateMsg = concat(
-    varint(1, now.getFullYear()),
-    varint(2, now.getMonth() + 1),
-    varint(3, now.getDate()),
-  );
+export function encodeCommandDeviceInfo(): Uint8Array {
+  const msg = Command.create({ type: 2, subtype: 2 });
+  const buf = Command.encode(msg).finish();
+  console.log(`[SystemMessages] DeviceInfo GET (${buf.length}B): ${toHex(buf)}`);
+  return buf;
+}
 
-  // Time { hour=1, minute=2, second=3, millisecond=4 }
-  const timeMsg = concat(
-    varint(1, now.getHours()),
-    varint(2, now.getMinutes()),
-    varint(3, now.getSeconds()),
-    varint(4, now.getMilliseconds()),
-  );
+export function encodeCommandBattery(): Uint8Array {
+  const msg = Command.create({ type: 2, subtype: 1 });
+  const buf = Command.encode(msg).finish();
+  return buf;
+}
 
-  // TimeZone { zoneOffset=1(sint32), dstOffset=2(sint32), name=3(string) }
-  const tzMsg = concat(
-    sint32(1, zoneOff),
-    sint32(2, 0), // dstOffset = 0
-    lenDel(3, tzBytes),
-  );
-
-  // Clock = date(1) + time(2) + timezone(3) + isNot24hour(4)
-  const clockMsg = concat(
-    lenDel(1, dateMsg),
-    lenDel(2, timeMsg),
-    lenDel(3, tzMsg),
-    boolF(4, false),
-  );
-
-  // System { clock(4) }
-  const sysMsg = lenDel(4, clockMsg);
-
-  // Command { type(1)=2, subtype(2)=3, system(4) }
-  return concat(
-    varint(1, 2),
-    varint(2, 3),
-    lenDel(4, sysMsg),
-  );
+function toHex(bytes: Uint8Array): string {
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }

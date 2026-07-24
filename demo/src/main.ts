@@ -7,7 +7,7 @@ import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 
-const VERSION = '6.0-test-panel';
+const VERSION = '6.0-asmctr';
 
 const $ = (id: string) => document.getElementById(id)!;
 

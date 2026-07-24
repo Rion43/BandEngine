@@ -5,8 +5,15 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
+import {
+  initDiagnostic, diagDevice, diagDisconnect, diagWrite, diagRecv, diagNotify,
+  diagSetAuthCompleted, diagSetEncryptionEnabled, diagSetSppBufferSize, diagDumpState,
+  diagStartConnect, diagEndConnect, diagGetPrimaryService, diagGetCharacteristics,
+  diagCharacteristics, diagStartNotifications, diagStartNotificationsResult,
+  diagWritePre, diagWritePost, diagError, diagClear,
+} from './BluefyDiagnostic.js';
 
-const VERSION = '6.0-test4-4commands';
+const VERSION = '6.0-diag';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -38,6 +45,8 @@ const ackTracker = new SppAckTracker();
 
 // ── Persistent BLE handler ──
 function onBleNotify(this: BluetoothRemoteGATTCharacteristic, event: Event) {
+  const char = this;
+  diagNotify(char);
   const value = new Uint8Array((event.target as unknown as BluetoothRemoteGATTCharacteristic).value!.buffer);
   if (notifyResolve) { notifyResolve(value); notifyResolve = null; }
   else { notifyQueue.push(value); }
@@ -77,6 +86,8 @@ function processSpp() {
 
 function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
   const tn = SppPacketType[pkt.packetType] || `?`;
+  diagRecv(pkt.payload);
+  diagSetSppBufferSize(sppBuffer.length);
   log('recv', `SPP ${tn} seq=${pkt.sequenceNumber} len=${pkt.payload.length}`);
 
   switch (pkt.packetType) {
@@ -140,11 +151,19 @@ async function sendAndWaitAuth(data: Uint8Array, timeoutMs: number, label: strin
 async function writeBLE(data: Uint8Array) {
   if (!writeChar) throw new Error('no writeChar');
   const ab = data.slice().buffer as ArrayBuffer;
-  if (writeChar.properties.writeWithoutResponse) {
-    await writeChar.writeValueWithoutResponse(ab);
-  } else {
-    await writeChar.writeValue(ab);
+  diagWritePre(`len=${data.length}`);
+  try {
+    if (writeChar.properties.writeWithoutResponse) {
+      await writeChar.writeValueWithoutResponse(ab);
+    } else {
+      await writeChar.writeValue(ab);
+    }
+    diagWritePost(`len=${data.length}`);
+  } catch (e: any) {
+    diagError('writeBLE', e);
+    throw e;
   }
+  diagWrite();
 }
 
 function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
@@ -223,7 +242,8 @@ async function startConnect() {
   try {
     setStatus('Pairing…'); btnConnect.disabled = true;
     log('info', '═══ FULL AUTH FLOW ═══');
-    sppBuffer = new Uint8Array(); notifyQueue = [];
+    sppBuffer = new Uint8Array(); notifyQueue = []; diagClear();
+    initDiagnostic();
 
     const device = await withTimeout(
       navigator.bluetooth.requestDevice({
@@ -231,12 +251,18 @@ async function startConnect() {
         optionalServices: [],
       }), 30000, 'requestDevice');
     log('info', `Device: ${device.name ?? '?'}`);
+    diagDevice(device);
     if (!device.gatt) throw new Error('gatt null');
 
     // ── DISCONNECT EVENT LISTENER ──
     device.addEventListener('gattserverdisconnected', (ev) => {
+      const evt = ev as Event;
+      const target = evt.target as any;
+      const gtConnected = target?.gatt?.connected;
       log('warn', `❗ DISCONNECT: gattserverdisconnected event`);
-      log('warn', `❗ Device: ${device.name}`);
+      log('warn', `❗ Device: ${device.name} | event.target.gatt.connected=${gtConnected}`);
+      diagDisconnect(device.name);
+      diagDumpState();
       setStatus('Disconnected!', false);
       setButtons(false);
     });
@@ -244,9 +270,13 @@ async function startConnect() {
 
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
+    diagEndConnect();
 
     const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
+    diagGetPrimaryService(service.uuid);
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
+    diagGetCharacteristics();
+    diagCharacteristics(chars);
     log('info', `FE95 characteristics (${chars.length}):`);
     for (const c of chars) {
       log('info', `  ${c.uuid} props: R=${c.properties.read} W=${c.properties.write} WW=${c.properties.writeWithoutResponse} N=${c.properties.notify}`);
@@ -262,7 +292,9 @@ async function startConnect() {
 
     notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
     notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+    diagStartNotifications(notifyChar.uuid);
     await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
+    diagStartNotificationsResult(notifyChar.uuid, true);
 
     // ═══ 1. SESSION CONFIG ═══
     log('info', '═══ 1. SESSION CONFIG ═══');
@@ -323,6 +355,8 @@ async function startConnect() {
       log('info', '🎉  AUTH SUCCESS!');
       setStatus('✓ Authenticated', true);
       setButtons(true);
+      diagSetAuthCompleted();
+      if (authProtocol?.authenticated) diagSetEncryptionEnabled();
 
       // Gadgetbridge birebir: Clock + DeviceInfo GET + Battery GET + DeviceState GET
       // hemen pes pese, band 70ms icinde disconnect ediyor

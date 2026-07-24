@@ -1,0 +1,131 @@
+GADGETBRIDGE DERİN ANALİZ — AUTH SUCCESS SONRASI YAŞAM DÖNGÜSÜ
+============================================================
+Kaynak: Gadgetbridge master branch (xiaomi module)
+Tarih: 2026-07-24
+
+================================================================
+1. AUTH SUCCESS SONRASI PAKETLER (Gadgetbridge)
+================================================================
+
+XiaomiSupport.java:405-417 → onAuthSuccess() şunları sırayla gönderir:
+
+| Sıra | Servis | Komut | Type | Subtype | Amaç |
+|------|--------|-------|------|---------|------|
+| 1 | systemService.setCurrentTime() | Clock | 2 | 3 | Saat senkronizasyonu |
+| 2-10 | systemService.initialize() | 9 komut | 2 | 2,78,1,9,29,7,51,53,39 | Device info, battery, display, camera, widgets, workout types |
+| 3-10 | healthService.initialize() | 8 komut | 8 | 0,8,10,12,14,21,42,35 | UserInfo, SPO2, HR, Standing, Stress, Goals, Vitality |
+| 11-11 | notificationService | 1 | 7 | 0 | Screen on notification |
+| 12-14 | scheduleService | 3 komut | 17 | 0,1,3 | Alarms, reminders, world clocks |
+| 15 | weatherService | 1 | 10 | 0 | Weather locations |
+| 16 | calendarService | 1 | 12 | 0 | Calendar sync |
+
+TOPLAM: ~30+ encrypted command auth success'tan sonra TransactionBuilder queue'ya ekleniyor.
+
+================================================================
+2. DISCONNECT HANDLING (Gadgetbridge vs BandEngine)
+================================================================
+
+| Özellik | Gadgetbridge (Android) | BandEngine (Web Bluetooth) |
+|---------|------------------------|----------------------------|
+| Disconnect callback | onConnectionStateChange (callback) | gattserverdisconnected event |
+| Status kodu | Alınabilir (0x81/0x85/0x08/0x93 = force) | ALINAMAZ (Web BT limitasyonu) |
+| Auto-reconnect | mBluetoothGatt.connect() (satır 456) | YOK |
+| State kurtarma | encryptionInitialized korunur | KAYBOLUR |
+| Reconnect sonrası | Queue kaldığı yerden devam | BAĞLANTI ÖLÜR |
+| CCCD re-enable | Otomatik (callback) | Manuel startNotifications() gerekir |
+
+Kritik bulgu: BtLEQueue.java:421-435 → default: forceDisconnect = false → autoReconnect=true → gatt.connect() → reconnect olur.
+
+================================================================
+3. AUTH SUCCESS SONRASI PAKETLER (Gadgetbridge)
+================================================================
+
+1. CLOCK SYNC (Clock)
+- Type: 2 (COMMAND_TYPE=2)
+- Subtype: 3 (CMD_CLOCK=3)
+- Protobuf: Clock{date, time, timezone, isNot24hour}
+- İlk encrypted paket
+
+2. SYSTEM SERVICE INITIALIZE (9 komut)
+- DeviceInfo (type=2, subtype=2)
+- DeviceStatus (type=2, subtype=78)
+- Battery (type=2, subtype=1)
+- Password (type=2, subtype=9)
+- DisplayItems (type=2, subtype=29)
+- CameraRemote (type=2, subtype=7)
+- Widgets (type=2, subtype=51)
+- WidgetParts (type=2, subtype=53)
+- WorkoutTypes (type=2, subtype=39)
+
+2. HEALTH SERVICE INITIALIZE (8 komut)
+- CMD_SET_USER_INFO (subtype=0)
+- CMD_CONFIG_SPO2_GET (8)
+- CMD_CONFIG_HEART_RATE_GET (10)
+- CMD_CONFIG_STANDING_REMINDER_GET (12)
+- CMD_CONFIG_STRESS_GET (14)
+- CMD_CONFIG_GOAL_NOTIFICATION_GET (21)
+- CMD_CONFIG_GOALS_GET (42)
+- CMD_CONFIG_VITALITY_SCORE_GET (35)
+
+3. NOTIFICATION SERVICE INITIALIZE (2 komut)
+- CMD_SCREEN_ON_ON_NOTIFICATIONS_GET
+- requestCannedMessages()
+
+4. SCHEDULE SERVICE (3 komut)
+- CMD_ALARM_GET
+- CMD_REMINDER_GET
+- CMD_WORLD_CLOCK_GET
+
+4. WEATHER SERVICE (2 komut)
+- setMeasurementSystem()
+- CMD_GET_LOCATIONS
+
+5. CALENDAR SYNC (1 komut)
+- CMD_SYNC_CALENDAR
+
+TOPLAM: ~30+ encrypted command auth success'tan sonra TransactionBuilder queue'ya ekleniyor.
+
+================================================================
+3. DISCONNECT HANDLING (Gadgetbridge vs BandEngine)
+================================================================
+
+| Özellik | Gadgetbridge (Android) | BandEngine (Web Bluetooth) |
+|---------|------------------------|----------------------------|
+| Disconnect callback | onConnectionStateChange (callback) | gattserverdisconnected event |
+| Status kodu | Alınabilir (0x81/0x85/0x08/0x93 = force) | ALINAMAZ (Web BT limitasyonu) |
+| Auto-reconnect | mBluetoothGatt.connect() (satır 456) | YOK |
+| State kurtarma | encryptionInitialized korunur | KAYBOLUR |
+| Reconnect sonrası | Queue kaldığı yerden devam | BAĞLANTI ÖLÜR |
+| CCCD re-enable | Otomatik (callback) | Manuel startNotifications() gerekir |
+
+Kritik bulgu: BtLEQueue.java:421-435 → default: forceDisconnect = false → autoReconnect=true → gatt.connect() → reconnect olur.
+
+================================================================
+5. MTU - requestMtu(512)
+================================================================
+
+TransactionBuilder.java:214 → RequestMtuAction → gatt.requestMtu(512) → onMtuChanged callback → maxWriteSize = calcMaxWriteChunk(mtu)
+
+Web Bluetooth'ta requestMtu YOK (tarayıcı yönetir). SessionConfig'te MAX_PACKET_SIZE=64512 zaten gönderiliyor. MTU sorunu DEĞİL.
+
+================================================================
+6. SONUÇ VE ÇÖZÜM
+================================================================
+
+BANDENGINE'DE TEK EKSİK: AUTO-RECONNECT + STATE RESTORE
+
+Gadgetbridge'de disconnect normal, auto-reconnect ile kurtarılır.
+BandEngine'de auto-reconnect YOK → bağlantı kalıcı ölür.
+
+ÇÖZÜM: autoReconnect + state restore implement et:
+- device.addEventListener('gattserverdisconnected', async () => {
+    await device.gatt.connect();
+    // servisleri yeniden keşfet
+    // characteristic referanslarını yenile
+    - await startNotifications()
+    - encryptionInitialized state'ini koru
+  })
+
+TEST 14 (GB MOD) bunu test ediyor. handleDisconnected içinde device.gatt.connect() + servis/char yeniden keşif + notification re-enable + state restore.
+
+Test et: GitHub Desktop → push → deploy → TEST 14 (GB MOD) seç → Connect.

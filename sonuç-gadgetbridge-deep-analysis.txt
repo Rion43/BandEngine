@@ -1,0 +1,383 @@
+GADGETBRIDGE DERİN ANALİZ — AUTH SUCCESS SONRASI YAŞAM DÖNGÜSÜ
+============================================================
+Kaynak: Gadgetbridge master branch (xiaomi module)
+Tarih: 2026-07-24
+
+================================================================
+1. AUTH SUCCESS CALLBACK ZİNCİRİ (Kod yolları)
+================================================================
+
+XiaomiAuthService.java:146-155 (handleCommand -> CMD_AUTH):
+----------------------------------------------------------------
+File: XiaomiAuthService.java:146-155
+Function: handleCommand() -> case CMD_AUTH:
+Line 148-155:
+    if (cmd.getSubtype() == CMD_AUTH || cmd.getAuth().getStatus() == 1) {
+        encryptionInitialized = cmd.getSubtype() == CMD_AUTH;
+        LOG.info("Authenticated, further communications are {}", encryptionInitialized ? "encrypted" : "in plaintext");
+        getSupport().getDevice().setUpdateState(GBDevice.State.INITIALIZED, getSupport().getContext());
+        getSupport().onAuthSuccess();  // SATIR 155: KRİTİK
+    }
+
+Flow:
+1. Band CMD_AUTH (subtype=27) gönderir, status=1 (success)
+2. XiaomiAuthService.handleCommand() -> case CMD_AUTH (line 146)
+155. getSupport().onAuthSuccess() çağrılır
+157. setUpdateState(INITIALIZED) -> cihaz durumu güncellenir
+158. onAuthSuccess() çağrılır
+
+XiaomiSupport.java:405-417:
+-------------------------
+File: XiaomiSupport.java:405-417
+Function: onAuthSuccess()
+Line 405-417:
+    @Override
+    public void onAuthSuccess() {
+        LOG.info("onAuthSuccess");
+        getConnectionSpecificSupport().onAuthSuccess();        // Line 408: BleProtocoV2.onAuthSuccess()
+        if (GBApplication.getPrefs().syncTime()) {              // Line 410
+            systemService.setCurrentTime();                     // Line 411: Clock sync!
+        }
+        for (final AbstractXiaomiService service : mServiceMap.values()) {  // Line 414
+            service.initialize();                               // Line 415: HER SERVİS initialize()
+        }
+    }
+
+XiaomiBleProtocolV2.java:195-197:
+-------------------------------
+File: XiaomiBleProtocolV2.java:195-197
+Function: onAuthSuccess()
+Line 195-197:
+    @Override
+    public void onAuthSuccess() {
+    }
+
+V2 protokolü için no-op. Sadece loglayabilir.
+
+XiaomiSystemService.setCurrentTime() -> XiaomiSystemService.java:316-353:
+-------------------------------------------------------------------------
+File: XiaomiSystemService.java:316-353
+Function: setCurrentTime()
+Line 345-352:
+    getSupport().sendCommand(
+        "set time",
+        XiaomiProto.Command.newBuilder()
+            .setType(COMMAND_TYPE)      // 2
+            .setSubtype(CMD_CLOCK)      // 3
+            .setSystem(XiaomiProto.System.newBuilder().setClock(clock).build())
+            .build()
+    );
+
+XiaomiSupport.java:414-416 - mServiceMap initialize sırası:
+------------------------------------------------------------
+File: XiaomiSupport.java:92-105
+Field: mServiceMap (LinkedHashMap - sıralı)
+Line 92-105:
+private final Map<Integer, AbstractXiaomiService> mServiceMap = new LinkedHashMap<>() {{
+    put(XiaomiAuthService.COMMAND_TYPE, authService);      // 1
+    put(XiaomiMusicService.COMMAND_TYPE, musicService);    // 18
+    put(XiaomiHealthService.COMMAND_TYPE, healthService);  // 8
+    put(XiaomiNotificationService.COMMAND_TYPE, notificationService);  // 7
+    put(XiaomiScheduleService.COMMAND_TYPE, scheduleService);  // 17
+    put(XiaomiWeatherService.COMMAND_TYPE, weatherService);  // 10
+    put(XiaomiSystemService.COMMAND_TYPE, systemService);    // 2
+    put(XiaomiCalendarService.COMMAND_TYPE, calendarService);  // 12
+    put(XiaomiWatchfaceService.COMMAND_TYPE, watchfaceService); // 4
+    put(XiaomiDataUploadService.COMMAND_TYPE, dataUploadService); // 22
+    put(XiaomiPhonebookService.COMMAND_TYPE, phonebookService);  // 21
+    put(XiaomiRpkService.COMMAND_TYPE, rpkService);          // 20
+}};
+
+initialize() çağrılma sırası (LinkedHashMap iteration order):
+1. authService (type=1) -> initialize() BOS
+2. musicService (18) -> initialize() BOS
+3. healthService (8) -> initialize(): setUserInfo() + 7 config GET
+4. notificationService (7) -> initialize(): screenOn + cannedMessages
+5. scheduleService (17) -> alarms+reminders+worldClocks
+6. weatherService (10) -> setMeasurementSystem + getLocations
+7. systemService (2) -> 9 GET komutu (device info, battery, status, password, display, camera, widgets, workout types)
+8. calendarService (12) -> syncCalendar
+9. watchfaceService (4) -> state reset
+10. dataUploadService (22) -> BOS
+11. phonebookService (21) -> BOS
+12. rpkService (20) -> BOS
+
+Her service.initialize() içinde sendCommand() çağrılıyor -> TransactionBuilder -> BtLEQueue.
+
+================================================================
+2. CALLBACK ZİNCİRİ (Android vs Web Bluetooth)
+================================================================
+
+Android (Gadgetbridge) - TransactionBuilder + BtLEQueue:
+--------------------------------------------------------
+File: BtLEQueue.java:188-197 (DispatchRunnable)
+Lines 188-197:
+    if (action.run(mBluetoothGatt)) {
+        boolean waitForResult = action.expectsResult();  // WriteAction: true, RequestMtuAction: true
+        if (waitForResult) {
+            mWaitForActionResultLatch.await();  // BLOKE OLUR
+        }
+    }
+
+WriteAction.java:63, 83-90:
+    expectsResult() -> true
+    run() -> writeCharacteristicImp() -> gatt.writeCharacteristic(characteristic, value, characteristic.getWriteType())
+    -> onCharacteristicWrite() callback gelene kadar latch.await() BLOKLAR
+
+RequestMtuAction.java:23, 62-63:
+    expectsResult() -> true
+    run() -> gatt.requestMtu(mtu)
+    onMtuChanged() callback'inde latch.countDown()
+
+Descriptor write (notify enable):
+    builder.notify(char, true) -> TransactionBuilder -> WriteAction (descriptor write)
+    -> onDescriptorWrite callback bekler
+
+Zincir:
+write -> onCharacteristicWrite -> latch -> next action
+requestMtu -> onMtuChanged -> next action
+notify -> onDescriptorWrite -> next action
+
+**BandEngine (Web Bluetooth):**
+- writeValueWithoutResponse -> Promise resolve (callback YOK)
+- startNotifications() -> Promise resolve (CCCD otomatik)
+- requestMtu() YOK
+- Tüm işlemler Promise zinciriyle paralel/sıralı ama callback bekleme YOK
+
+================================================================
+3. AUTH SUCCESS SONRASI PAKETLER (Saat 17:00 - 17:30 saatleri)
+================================================================
+
+AUTH SUCCESS (CMD_AUTH status=1) sonrası gönderilen paketler (sıralı):
+
+1. CLOCK SYNC (Clock)
+-----------------
+Type: 2 (COMMAND_TYPE=2)
+Subtype: 3 (CMD_CLOCK=3)
+Protobuf: Clock{date, time, timezone, isNot24hour}
+Kaynak: XiaomiSystemService.setCurrentTime() -> Support.java:411 -> XiaomiSystemService.java:316-353
+Thread: onAuthSuccess() -> systemService.setCurrentTime() -> sendCommand() -> TransactionBuilder -> BtLEQueue -> WriteAction
+Gecikme: ~50-200ms (callback bekleme + queue)
+
+2. SYSTEM SERVICE INITIALIZE (9 komut)
+--------------------------------------
+File: XiaomiSystemService.java:123-143 (initialize())
+SERVICE_INITIALIZE)
+
+Sıra:
+1. CMD_DEVICE_INFO (subtype=2) - get device info
+2. CMD_DEVICE_STATE_GET (subtype=78) - get device status
+3. CMD_BATTERY (subtype=1) - get battery state
+4. CMD_PASSWORD_GET (subtype=9) - get password
+4. CMD_DISPLAY_ITEMS_GET (subtype=29) - display items
+5. CMD_CAMERA_REMOTE_GET (subtype=7) - camera remote
+6. CMD_WIDGET_SCREENS_GET (subtype=51) - widgets
+7. CMD_WIDGET_PARTS_GET (subtype=53) - widget parts
+8. CMD_WORKOUT_TYPES_GET (subtype=39) - workout types
+
+Her biri: TransactionBuilder -> WriteAction -> BtLEQueue -> callback bekle.
+
+2. HEALTH SERVICE INITIALIZE (8 komut)
+--------------------------------------
+File: XiaomiHealthService.java:195-208
+1. CMD_SET_USER_INFO (subtype=0) - setUserInfo()
+2. CMD_CONFIG_SPO2_GET (8) - SPO2 config
+3. CMD_CONFIG_HEART_RATE_GET (10) - HR config
+4. CMD_CONFIG_STANDING_REMINDER_GET (12) - standing reminder
+4. CMD_CONFIG_STRESS_GET (14) - stress config
+5. CMD_CONFIG_GOAL_NOTIFICATION_GET (21) - goal notification
+6. CMD_CONFIG_GOALS_GET (42) - goals
+5. CMD_CONFIG_VITALITY_SCORE_GET (35) - vitality score
+
+3. NOTIFICATION SERVICE INITIALIZE (2 komut)
+--------------------------------------------
+File: XiaomiNotificationService.java:94-99
+1. CMD_SCREEN_ON_ON_NOTIFICATIONS_GET
+2. requestCannedMessages()
+
+4. SCHEDULE SERVICE (3 komut)
+------------------------------
+File: XiaomiScheduleService.java:147-159
+1. CMD_ALARM_GET
+2. CMD_REMINDER_GET
+3. CMD_WORLD_CLOCK_GET
+
+5. WEATHER SERVICE (2 komut)
+-----------------------------
+File: XiaomiWeatherService.java:77-80
+1. setMeasurementSystem()
+2. CMD_GET_LOCATIONS
+
+6. CALENDAR SYNC (1 komut)
+---------------------------
+File: XiaomiCalendarService.java:59-61
+1. CMD_SYNC_CALENDAR
+
+**TOTAL: ~30+ encrypted command** auth success sonrası, TransactionBuilder queue'ya sırayla eklenir.
+
+Saat 17:00 civarında total ~5-10 saniye sürer (callback latencies).
+
+================================================================
+4. DISCONNECT HANDLING (Gadgetbridge vs BandEngine)
+================================================================
+
+Gadgetbridge (BtLEQueue.java:402-486):
+--------------------------------------
+File: BtLEQueue.java:402-486
+Function: handleDisconnected(int status)
+
+Status kodları (Line 421-435):
+- 0x81 (GATT_INTERNAL_ERROR) -> forceDisconnect = true
+- 0x85 (GATT_ERROR) -> forceDisconnect = true
+- 0x08 (GATT_INSUFFICIENT_AUTHORIZATION) -> forceDisconnect = true
+- 0x93 (GATT_CONNECTION_TIMEOUT) -> forceDisconnect = true
+- DEFAULT -> forceDisconnect = FALSE
+
+forceDisconnect = FALSE ise (normal disconnect):
+    Line 447-464:
+    if (mBluetoothGatt != null) {
+        if (mDeviceSupport.getAutoReconnect()) {  // DEFAULT TRUE
+            if (mDeviceSupport.getScanReconnect()) {
+                // scan ile reconnect
+            } else {
+                LOG.info("enabling automatic immediate BLE reconnection");
+                mPauseTransaction = false;
+                if (mBluetoothGatt.connect()) {  // <-- RECONNECT!
+                    setDeviceConnectionState(State.CONNECTING);
+                } else {
+                    forceDisconnect = true;
+                }
+            }
+        } else {
+            forceDisconnect = true;
+        }
+    }
+
+Reconnect başarılı olursa:
+- onConnectionStateChange -> STATE_CONNECTED
+- Cached services varsa discoverServices atlanır
+- mPauseTransaction = false
+- Transaction queue devam eder
+- encryptionInitialized = true KORUNUR (XiaomiAuthService.java:70)
+
+Web Bluetooth (BandEngine):
+---------------------------
+- device.addEventListener('gattserverdisconnected')
+- status kodu ALINAMAZ (Web Bluetooth API kısıtlama)
+- autoReconnect YOK (manuel implementasyon gerekir)
+- gattServer.connect() ile reconnect yapılabilir ama:
+  - Service/Characteristic referansları STALE olur
+  - startNotifications() tekrar çağrılmalı
+  - encryptionInitialized state'i manuel korunmalı
+
+================================================================
+5. MTU KULLANIMI
+================================================================
+
+File: AbstractBTLEDeviceSupport.java:92-93
+calcMaxWriteChunk(int mtu):
+    int safeMtu = Math.max(23, mtu);
+    return safeMtu - 3;  // ATT overhead = 3 bytes
+
+XiaomiBleProtocolV2.java:47, 191, 352:
+    private int maxWriteSize = 244;  // default MTU 247 - 3
+    onMtuChanged -> maxWriteSize = calcMaxWriteChunk(mtu)
+    writeChunks() -> chunk boyutu = maxWriteSize
+
+SPPv2 paket boyutu: max 244 byte payload (MTU 247 default).
+SessionConfig içinde MAX_PACKET_SIZE = 0xfc00 = 64512 bytes (band'a bildirilir).
+AES-CTR paketleri max 244 byte chunk'larda yazılır.
+
+Authentication paketleri: < 100 byte -> MTU etkilemez.
+SPPv2 paketleri: max 244 byte -> MTU etkiler.
+File transfers: MTU kritik.
+
+Web Bluetooth: MTU request YOK (tarayıcı otomatik).
+BE'de maxWriteSize = 244 hardcoded.
+
+================================================================
+6. AUTO RECONNECT - ENCRYPTION STATE KORUMA
+================================================================
+
+Gadgetbridge:
+XiaomiAuthService.java:70, 89-90, 149
+    private boolean encryptionInitialized = false;
+    protected void startEncryptedHandshake() {
+        encryptionInitialized = false;
+        ...
+    }
+    case CMD_AUTH: encryptionInitialized = cmd.getSubtype() == CMD_AUTH;
+
+Reconnect sonrası:
+- XiaomiAuthService instance YENİ OLUŞTURULMAZ (XiaomiSupport singleton)
+- encryptionInitialized = true KORUNUR (instance aynı kalır)
+- mServiceMap aynen kalır
+- BtLEQueue connect() -> onConnectionStateChange -> CONNECTED
+- Transaction queue kaldığı yerden devam eder
+
+Web Bluetooth:
+- gattServer.connect() yeni bağlantı açar
+- Eski gattServer referansı STALE
+- btCharacteristicRead/Write STALE
+- notifications disabled
+- encryptionInitialized = true AMA characteristic referansları bozuk
+- sendEncrypted() -> stale characteristic -> hata/sessiz fail
+
+================================================================
+7. ÖZET: BANENGINE'DEKİ KRİTİK EKSİKLER
+================================================================
+
+| # | Özellik | Gadgetbridge | BandEngine | Etki |
+|---|---------|--------------|------------|------|
+| 1 | Write callback zinciri | Var (latch.await) | Yok | ~50ms gecikme farkı |
+| 2 | Descriptor write callback | Var (onDescriptorWrite) | Yok | Notify enable sync eksik |
+| 3 | requestMtu | Var (requestMtu) | YOK | MTU negosyasyonsuz |
+| 4 | Service discovery delay | 300ms (cached skip) | 0ms | SessionConfig erken gider |
+| 4 | Auto reconnect | Var (gatt.connect) | YOK | DISCONNECT = Ölüm |
+| 5 | Reconnect state restore | encryptionInitialized korunur | State kaybolur | Session ölür |
+| 5 | CCCD re-enable | Otomatik | Manuel gerekli | Notify durur |
+| 6 | Transaction queue | Thread-safe + latch | Promise chain | Sıra bozulabilir |
+| 7 | MTU negotiation | requestMtu(512) | YOK | Chunk boyutu sabit |
+
+================================================================
+8. ÇÖZÜM ÖNERİSİ (BandEngine için)
+================================================================
+
+1. autoReconnect implement et:
+   - device.addEventListener('gattserverdisconnected', async () => {
+       await device.gatt.connect();
+       // servisleri yeniden keşfet
+       // characteristic referanslarını yenile
+       - await startNotifications()
+       - encryptionInitialized state'ini koru
+   })
+
+2. writeValueWithResponse kullan (eğer karakteristik destekliyorsa):
+   - 005F: PROPERTY_WRITE_NO_RESPONSE=true, PROPERTY_WRITE=false -> writeWithResponse YOK
+   - 005E: WRITE_NO_RESPONSE + NOTIFY -> yazma yok
+   => Sadece writeWithoutResponse mümkün
+
+2.5. MTU:
+   - SessionConfig maxPacketSize=65535 yeterli
+   - requestMtu Web Bluetooth'ta yok, ignore et
+
+3. Disconnect watchdog:
+   - Band ~70-100ms sonra disconnect ediyor
+   - Gadgetbridge reconnect ile ayakta kalıyor
+   - BandEngine reconnect YAPMALI
+
+3. Service discovery delay:
+   - setTimeout(300, discoverServices) ekle (bonded: 1600ms, unbonded: 300ms)
+
+================================================================
+SONUÇ
+================================================================
+
+BandEngine'in AUTH SUCCESS sonrası disconnect sorunu:
+- BUG DEĞİL: Kripto/protobuf/auth HATALI DEĞİL
+- SORUN: Web Bluetooth'un native Android BLE callback/reconnect desteğinin eksikliği
+- ÇÖZÜM: autoReconnect + state restore + service rediscovery IMPLEMENT ET
+
+Gadgetbridge'de disconnect normaldir, ama autoReconnect ile anında kurtarılır.
+BandEngine'de autoReconnect YOK -> bağlantı kalıcı olarak kesilir.
+================================================================

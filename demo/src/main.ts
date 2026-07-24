@@ -312,31 +312,7 @@ async function startConnect() {
       log('info', '🎉  AUTH SUCCESS!');
       setStatus('✓ Authenticated', true);
       setButtons(true);
-
-      // ═══ POST-AUTH: GADGETBRIDGE SIRAYLA (Clock -> DeviceInfo) ═══
-      log('info', '═══ POST-AUTH: CLOCK + DEVICE INFO (ENCRYPTED) ═══');
-      try {
-        // 1. Önce Clock (Gadgetbridge setCurrentTime gibi) - ENCRYPTED
-        const now = new Date();
-        const clockCmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]); // type=2, subtype=3 (CMD_CLOCK=3)
-        log('info', `Clock cmd: ${toHex(clockCmd)}`);
-        const encClock = await authProtocol!.encryptV2(clockCmd);
-        log('info', `Encrypted: ${toHex(encClock)}`);
-        const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
-        log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
-        await writeBLE(sppClock);
-        await new Promise(r => setTimeout(r, 1000));
-
-        // 2. Device Info (encrypted)
-        log('info', '═══ DEVICE INFO (ENCRYPTED) ═══');
-        const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
-        log('info', `DeviceInfo cmd: ${toHex(cmd)}`);
-        const enc = await authProtocol!.encryptV2(cmd);
-        log('info', `Encrypted: ${toHex(enc)}`);
-        const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-        log('sent', `DeviceInfo SPPv2 (${spp.length}B): ${hexLog(spp)}`);
-        await writeBLE(spp);
-      } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
+      log('info', '═══ CONNECTED — band bağlantıda ═══');
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

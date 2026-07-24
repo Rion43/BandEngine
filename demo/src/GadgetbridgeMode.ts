@@ -495,13 +495,12 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
 
   // GB: autoReconnect (447-464, 471-485)
   if (handle.state === State.INITIALIZED && handle.autoReconnect) {
-    if (handle.gattServer) {
+    if (handle.encryptionInitialized && handle.autoReconnect && handle.device?.gatt) {
       // GB: mBluetoothGatt.connect() (456) -> STATE_CONNECTING
-      log('info', '[GB] autoReconnect: gatt.connect()');
+      log('info', '[GB] autoReconnect: device.gatt.connect()');
       try {
-        await handle.gattServer.connect();
-        // GB: onConnectionStateChange -> STATE_CONNECTED -> reconnect basarili
-        log('info', '[GB] autoReconnect OK');
+        await handle.device!.gatt!.connect();
+        log('info', '[GB] autoReconnect OK - gatt connected');
         handle.state = State.INITIALIZED;
         // Notification'lari yeniden enable (Web Bluetooth gereksinimi)
         if (handle.btCharacteristicRead) {

@@ -8,7 +8,7 @@ import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystem
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod-v3';
+const VERSION = '6.0-gbmod-final';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -262,7 +262,7 @@ const TEST_NAMES: Record<number, string> = {
   11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
   12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
   13: 'TEST 13: Reconnect sonrasi Clock',
-  14: 'GB MOD: full GB flow + autoReconnect',
+  14: 'GB MOD: full GB flow + autoReconnect (final)',
 };
 
 async function runPostAuth(): Promise<void> {

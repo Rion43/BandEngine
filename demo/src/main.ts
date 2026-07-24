@@ -6,7 +6,7 @@ import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
-const VERSION = '6.0-test1-clock';
+const VERSION = '6.0-test1-clock-fix';
 
 const $ = (id: string) => document.getElementById(id)!;
 

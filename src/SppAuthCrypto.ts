@@ -36,11 +36,11 @@ export { aesCcmEncrypt } from './aes-ccm.js';
 
 /** AES-CTR using WebCrypto native AES-CTR */
 export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength), { name: 'AES-CTR' }, false, ['encrypt']);
+  const k = await crypto.subtle.importKey('raw', key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) as ArrayBuffer, { name: 'AES-CTR' }, false, ['encrypt']);
   const enc = await crypto.subtle.encrypt(
-    { name: 'AES-CTR', counter: key.slice().buffer, length: 128 },
+    { name: 'AES-CTR', counter: key.slice().buffer as ArrayBuffer, length: 128 },
     k,
-    data
+    data as any
   );
   return new Uint8Array(enc);
 }

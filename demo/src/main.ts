@@ -380,13 +380,8 @@ async function runPostAuth(): Promise<void> {
       }
     }
   } else if (test === 14) {
-    // GB MOD: startConnect'te secilen device'i kullan
-    if (!selectedDevice) { log('error', 'No device selected'); return; }
-    const gbHandle = new GBDeviceHandle();
-    if (gattServer) { try { gattServer.disconnect(); } catch {} }
-    // Kisa bekle, baglantinin tam kapanmasini bekle
-    await new Promise(r => setTimeout(r, 500));
-    await gbFullFlow(gbHandle, selectedDevice, setStatus);
+    // GB MOD: startConnect'te yakalanir, buraya gelmez
+    log('error', 'GB MOD should not reach runPostAuth');
   }
 
   log('info', `========== ${tname} END ==========`);
@@ -444,6 +439,18 @@ $('btn-settings').addEventListener('click', () => {
 
 async function startConnect() {
   try {
+    // GB MOD seciliyse direkt GB flow'a git
+    if (selectedTest === 14) {
+      const gbHandle = new GBDeviceHandle();
+      const dev = await navigator.bluetooth.requestDevice({
+        filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
+        optionalServices: [],
+      });
+      await gbFullFlow(gbHandle, dev, setStatus);
+      btnConnect.disabled = false;
+      return;
+    }
+
     setStatus('Pairing…'); btnConnect.disabled = true;
     log('info', '═══ FULL AUTH FLOW ═══');
     sppBuffer = new Uint8Array(); notifyQueue = [];

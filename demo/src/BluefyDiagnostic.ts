@@ -1,169 +1,99 @@
-// BluefyDiagnostic — BLE teşhis modu
-// Hiçbir auth/AES/SPPv2 koduna dokunmaz, sadece log ekler
+// BluefyDiagnostic — BLE teşhis modu v2
+// Tablo formatında write logları, characteristic doğrulama
 
-export interface DiagState {
-  deviceId: string;
-  deviceName: string;
-  connected: boolean;
-  gattConnected: boolean;
-  serviceCount: number;
-  charCount: number;
-  notifyEnabled: boolean;
-  writeQueue: number;
-  sppBufferSize: number;
-  authCompleted: boolean;
-  encryptionEnabled: boolean;
-  lastSentAt: number;
-  lastRecvAt: number;
-  lastNotificationAt: number;
-  disconnectCount: number;
+export interface WriteLog {
+  uuid: string;
+  bytes: number;
+  opcode: string;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  connectedAfter: boolean;
+  error: string | null;
+  charValid: boolean;
+  seq: number;
 }
 
-let diag: DiagState = {
-  deviceId: '', deviceName: '', connected: false, gattConnected: false,
-  serviceCount: 0, charCount: 0, notifyEnabled: false, writeQueue: 0,
-  sppBufferSize: 0, authCompleted: false, encryptionEnabled: false,
-  lastSentAt: 0, lastRecvAt: 0, lastNotificationAt: 0, disconnectCount: 0,
-};
+let writeLogs: WriteLog[] = [];
+let disconnectTime = 0;
+let lastWriteTime = 0;
+let seqCounter = 0;
+let gattServerPtr: any = null;
 
-let diagEnabled = false;
+export function diagInit(gatt: any) {
+  gattServerPtr = gatt;
+  writeLogs = [];
+  disconnectTime = 0;
+  lastWriteTime = 0;
+  seqCounter = 0;
+  console.log(`[DIAG] init`);
+}
 
-export function initDiagnostic() {
-  diagEnabled = true;
-  diag = { deviceId: '', deviceName: '', connected: false, gattConnected: false,
-    serviceCount: 0, charCount: 0, notifyEnabled: false, writeQueue: 0,
-    sppBufferSize: 0, authCompleted: false, encryptionEnabled: false,
-    lastSentAt: 0, lastRecvAt: 0, lastNotificationAt: 0, disconnectCount: 0 };
+export function setGattPtr(gatt: any) {
+  gattServerPtr = gatt;
+}
 
-  // 2. userAgent
-  console.log(`[DIAG] userAgent: ${navigator.userAgent}`);
-
-  // 3. Bluefy tespiti
-  const ua = navigator.userAgent;
-  const isBluefy = ua.includes('Bluefy') || ua.includes('bluefy');
-  const isSafari = ua.includes('Safari') && !ua.includes('Chrome');
-  const isIOS = /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  console.log(`[DIAG] Bluefy: ${isBluefy} | Safari: ${isSafari} | iOS: ${isIOS}`);
-
-  // 1. navigator.bluetooth
-  if (typeof navigator.bluetooth === 'undefined') {
-    console.log(`[DIAG] navigator.bluetooth: UNDEFINED`);
-  } else {
-    const bt = navigator.bluetooth as any;
-    const refDevice = bt.referringDevice;
-    console.log(`[DIAG] navigator.bluetooth: available referringDevice=${refDevice?.name ?? 'none'}`);
+export function diagGetWriteTable(): string {
+  let table = '--- WRITE LOG TABLE ---\n';
+  table += 'idx | uuid | seq | bytes | opcode | dur(ms) | connected? | error\n';
+  table += '----|------|-----|-------|--------|---------|------------|------\n';
+  for (const w of writeLogs) {
+    table += `${String(writeLogs.indexOf(w)).padStart(3)} | ${w.uuid.slice(-6)} | ${w.seq} | ${String(w.bytes).padStart(4)} | ${w.opcode.padStart(8)} | ${String(w.durationMs).padStart(5)} | ${w.connectedAfter ? 'YES' : 'NO' } | ${w.error ?? 'OK'}\n`;
   }
-
-  return { isBluefy, isSafari, isIOS };
-}
-
-export function diagDevice(device: BluetoothDevice) {
-  if (!diagEnabled) return;
-  diag.deviceId = device.id;
-  diag.deviceName = device.name ?? '?';
-  diag.gattConnected = device.gatt?.connected ?? false;
-  console.log(`[DIAG] BluetoothDevice id=${device.id} name=${device.name} gattConnected=${diag.gattConnected}`);
-}
-
-export function diagClear() {
-  diag.lastNotificationAt = 0;
-}
-
-export function diagDisconnect(deviceName: string) {
-  diag.disconnectCount++;
-  diag.gattConnected = false;
-  console.log(`[DIAG] DISCONNECT #${diag.disconnectCount} name=${deviceName}`);
-  console.log(`[DIAG]   authCompleted=${diag.authCompleted} encryptionEnabled=${diag.encryptionEnabled}`);
-  console.log(`[DIAG]   lastSent=${diag.lastSentAt ? Date.now() - diag.lastSentAt + 'ms ago' : 'never'}`);
-  console.log(`[DIAG]   lastRecv=${diag.lastRecvAt ? Date.now() - diag.lastRecvAt + 'ms ago' : 'never'}`);
-  console.log(`[DIAG]   lastNotification=${diag.lastNotificationAt ? Date.now() - diag.lastNotificationAt + 'ms ago' : 'never'}`);
-  console.log(`[DIAG]   sppBuffer=${diag.sppBufferSize}B writeQueue=${diag.writeQueue}`);
-}
-
-export function diagWrite() {
-  diag.lastSentAt = Date.now();
-}
-
-export function diagRecv(payload: Uint8Array) {
-  diag.lastRecvAt = Date.now();
-  diag.sppBufferSize = payload.length;
-}
-
-export function diagNotify(char: BluetoothRemoteGATTCharacteristic) {
-  diag.lastNotificationAt = Date.now();
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[DIAG:${ts}] notification from ${char.uuid}`);
-}
-
-export function diagSetAuthCompleted() {
-  diag.authCompleted = true;
-}
-
-export function diagSetEncryptionEnabled() {
-  diag.encryptionEnabled = true;
-}
-
-export function diagSetSppBufferSize(size: number) {
-  diag.sppBufferSize = size;
-}
-
-export function diagDumpState() {
-  console.log(`[DIAG] === STATE DUMP ===`);
-  console.log(`[DIAG] device=${diag.deviceName} connected=${diag.gattConnected} auth=${diag.authCompleted} enc=${diag.encryptionEnabled}`);
-  console.log(`[DIAG] lastSent=${diag.lastSentAt} lastRecv=${diag.lastRecvAt} lastNotif=${diag.lastNotificationAt}`);
-  console.log(`[DIAG] sppBuf=${diag.sppBufferSize} disconnectCount=${diag.disconnectCount}`);
-  console.log(`[DIAG] === END DUMP ===`);
-}
-
-export function diagStartConnect() {
-  console.log(`[DIAG] connect() START`);
-}
-
-export function diagEndConnect() {
-  console.log(`[DIAG] connect() END`);
-}
-
-export function diagGetPrimaryService(uuid: string) {
-  console.log(`[DIAG] getPrimaryService: ${uuid}`);
-}
-
-export function diagGetCharacteristics() {
-  console.log(`[DIAG] getCharacteristics()`);
-}
-
-export function diagCharacteristics(chars: BluetoothRemoteGATTCharacteristic[]) {
-  diag.charCount = chars.length;
-  for (const c of chars) {
-    const uuid = c.uuid.toLowerCase();
-    const p = c.properties;
-    console.log(`[DIAG]   char ${uuid} R=${p.read} W=${p.write} WW=${p.writeWithoutResponse} N=${p.notify} I=${p.indicate}`);
+  if (disconnectTime > 0) {
+    table += `\nDisconnect: ${disconnectTime}ms after last write\n`;
+    table += `Disconnect: ${disconnectTime}ms after auth success\n`;
   }
+  return table;
 }
 
-export function diagStartNotifications(uuid: string) {
-  console.log(`[DIAG] startNotifications: ${uuid}`);
-}
-
-export function diagStartNotificationsResult(uuid: string, ok: boolean) {
-  diag.notifyEnabled = ok;
-  console.log(`[DIAG] startNotifications ${uuid}: ${ok ? 'OK' : 'FAIL'}`);
-}
-
-export function diagWritePre(desc: string) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[DIAG:${ts}] write ${desc} BEFORE`);
-}
-
-export function diagWritePost(desc: string) {
-  const ts = new Date().toISOString().slice(11, 23);
-  console.log(`[DIAG:${ts}] write ${desc} AFTER`);
-}
-
-export function diagError(context: string, err: any) {
+export async function diagWriteDebug(
+  writeFn: () => Promise<void>,
+  uuid: string,
+  bytes: number,
+  opcode: string,
+): Promise<{ok: boolean; err: any}> {
+  const seq = seqCounter++;
+  const startMs = Date.now();
+  const logEntry: WriteLog = {
+    uuid, bytes, opcode, startMs, endMs: 0, durationMs: 0,
+    connectedAfter: false, error: null, charValid: true, seq,
+  };
   try {
-    const json = JSON.stringify(err, Object.getOwnPropertyNames(err));
-    console.log(`[DIAG] ERROR ${context}: ${err?.message ?? err} | JSON: ${json}`);
-  } catch {
-    console.log(`[DIAG] ERROR ${context}: ${err?.message ?? err}`);
+    console.log(`[DIAG:WRITE] seq=${seq} uuid=${uuid} bytes=${bytes}: BEFORE`);
+    await writeFn();
+    logEntry.endMs = Date.now();
+    logEntry.durationMs = logEntry.endMs - startMs;
+    // check if characteristic still valid by trying to access properties
+    try {
+      const gatt = gattServerPtr;
+      logEntry.connectedAfter = gatt?.connected ?? false;
+    } catch { logEntry.connectedAfter = false; }
+    logEntry.charValid = true;
+    console.log(`[DIAG:WRITE] seq=${seq}: AFTER dur=${logEntry.durationMs}ms connected=${logEntry.connectedAfter}`);
+    writeLogs.push(logEntry);
+    lastWriteTime = Date.now();
+    return {ok: true, err: null};
+  } catch (e: any) {
+    logEntry.endMs = Date.now();
+    logEntry.durationMs = logEntry.endMs - startMs;
+    logEntry.error = e?.message ?? String(e);
+    logEntry.connectedAfter = false;
+    logEntry.charValid = false;
+    console.log(`[DIAG:WRITE] seq=${seq}: ERROR ${logEntry.error}`);
+    writeLogs.push(logEntry);
+    return {ok: false, err: e};
   }
+}
+
+export function diagOnDisconnect() {
+  disconnectTime = Date.now();
+  const table = diagGetWriteTable();
+  console.log(`[DIAG] ${table}`);
+}
+
+export function diagSummary(): string {
+  const totalDuration = writeLogs.reduce((s, w) => s + w.durationMs, 0);
+  const errors = writeLogs.filter(w => w.error).length;
+  return `Writes: ${writeLogs.length} | Errors: ${errors} | Total dur: ${totalDuration}ms | Last write before disconnect: ${disconnectTime > 0 && lastWriteTime > 0 ? disconnectTime - lastWriteTime + 'ms' : 'N/A'}`;
 }

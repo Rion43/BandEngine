@@ -1,58 +1,61 @@
-Auth artık çalışıyor.
+Artık auth doğru çalışıyor.
 
-Disconnect problemi araştırılıyor.
+Clock, DeviceInfo, Battery ve DeviceState gönderiliyor.
 
-26 initialize paketini aynı anda gönderme.
+Ancak hiçbirine ACK veya DATA cevabı gelmiyor.
 
-Deneysel ilerle.
+31 ms sonra gattserverdisconnected geliyor.
 
-TEST 1
+Yeni görev:
 
-Auth SUCCESS sonrası
+Gönderilen paketlerin gerçekten BLE characteristic'e yazıldığını doğrula.
 
-yalnızca
+Şunları logla:
 
-CMD_CLOCK (setCurrentTime)
+1.
+writeValueWithoutResponse() çağrılmadan önce
 
-gönder.
+2.
+writeValueWithoutResponse() Promise resolve zamanı
 
-30 saniye bekle.
+3.
+kaç byte yazıldı
 
-Bağlantı kopuyor mu logla.
+4.
+hangi characteristic UUID
 
-TEST 2
+5.
+hangi opcode
 
-Eğer hâlâ koparsa
+6.
+kaç ms sürdü
 
-Clock +
+7.
+Bluefy herhangi bir exception döndürdü mü
 
-CMD_DEVICE_INFO_GET
+8.
+write tamamlandıktan sonra characteristic hâlâ valid mi
 
-gönder.
+9.
+gatt.connected write sonrası true mı
 
-Tekrar 30 saniye bekle.
+10.
+İlk disconnect ile son write arasında kaç ms var
 
-TEST 3
+Bunları tablo halinde logla.
 
-Clock +
+Ayrıca Gadgetbridge ile karşılaştır:
 
-CMD_BATTERY_GET
+Gadgetbridge Clock paketini hangi characteristic'e yazıyor?
 
-TEST 4
+Write mi kullanıyor?
 
-Clock +
+WriteWithoutResponse mı kullanıyor?
 
-CMD_DEVICE_STATE_GET
+Signed Write mı kullanıyor?
 
-Kurallar:
+Reliable Write mı kullanıyor?
 
-- Auth koduna dokunma.
-- AES koduna dokunma.
-- SPPv2 koduna dokunma.
-- Aynı anda 26 paket gönderme.
-- Her test tek commit olsun.
-- Hangi paketin disconnect'i engellediğini bul.
+Write Type tam olarak nedir?
 
-Amaç:
-
-BandEngine'in bağlantıyı açık tutan minimum paketi keşfetmek.
+Bunu kaynak koddan kesin olarak bul.

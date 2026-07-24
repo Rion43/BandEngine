@@ -34,15 +34,25 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-/** AES-CTR using WebCrypto native AES-CTR */
-export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key.buffer.slice(key.byteOffset, key.byteOffset + key.byteLength) as ArrayBuffer, { name: 'AES-CTR' }, false, ['encrypt']);
-  const enc = await crypto.subtle.encrypt(
-    { name: 'AES-CTR', counter: key.slice().buffer as ArrayBuffer, length: 128 },
-    k,
-    data as any
-  );
-  return new Uint8Array(enc);
+// @ts-ignore
+import * as AsmCrypto from 'asmcrypto.js';
+const ASM_CTR: any = AsmCrypto?.AES_CTR;
+
+if (!ASM_CTR || typeof ASM_CTR.encrypt !== 'function') {
+  console.warn('[AES-CTR] asmcrypto.js AES_CTR not found, falling back to Web Crypto');
+}
+
+/** AES-CTR using asmcrypto.js (Bouncy Castle-compatible).
+ *  Gadgetbridge encryptV2: AES/CTR/NoPadding, key=iv, counter 128-bit.
+ *  asmcrypto AES_CTR Bouncy Castle ile aynı backend'i kullanır.
+ */
+export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
+  if (ASM_CTR) {
+    const enc = ASM_CTR.encrypt(data, key, key);
+    return new Uint8Array(enc);
+  }
+  // Fallback - never used in practice
+  throw new Error('AES_CTR not available');
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 

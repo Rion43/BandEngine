@@ -257,6 +257,7 @@ const TEST_NAMES: Record<number, string> = {
   8: 'TEST 8: Clock+DeviceInfo',
   9: 'TEST 9: Clock+Battery',
   10: 'TEST 10: Clock+DeviceState',
+  11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -308,6 +309,13 @@ async function runPostAuth(): Promise<void> {
   } else if (test === 10) {
     await sendEncrypted(encodeCommandClock(), 'Clock');
     await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
+    await monitorConnection(30);
+  } else if (test === 11) {
+    // TEST 11: Plaintext Clock on Authentication channel
+    const clockBuf = encodeCommandClock();
+    const spp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, clockBuf);
+    log('sent', `Plaintext Clock AUTH ch (${spp.length}B): ${hexLog(spp)}`);
+    await writeBLE(spp);
     await monitorConnection(30);
   } else {
     // TEST 0: Normal — all 4 commands immediately

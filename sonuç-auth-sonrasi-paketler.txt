@@ -1,0 +1,204 @@
+Gadgetbridge AUTH SUCCESS Sonrasi Ilk 5 Saniyedeki TUM Paketler
+=============================================================
+Kaynak: XiaomiSupport.onAuthSuccess() + mServiceMap.initialize()
+        XiaomiAuthService.java L149-155
+        XiaomiSupport.java L405-416
+
+ZAMAN CIZELGESI:
+───────────────────────────────────────────────────────────────
+
+0ms        AUTH SUCCESS
+           encryptionInitialized = true
+           setUpdateState(INITIALIZED)
+           → for each service in mServiceMap: service.initialize()
+
+───────────────────────────────────────────────────────────────
+
+PAKET SIRASI (teorik ~1-30ms icinde):
+
+#1   ~1ms    Clock / setCurrentTime
+             XiaomiSystemService.java L345-352
+             type=2   subtype=3 (CMD_CLOCK)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             protobuf: Clock{time{hour,min,sec,ms} date{year,month,day}
+                        timezone{offset,dst,name} isNot24Hour}
+             purpose: Saati banda gonder
+
+#2   ~2ms    User Info
+             XiaomiHealthService.java L307-314
+             type=8   subtype=0 (CMD_SET_USER_INFO)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             protobuf: UserInfo{height,weight,birthday,gender,
+                        maxHeartRate,goalCalories,goalSteps,
+                        goalStanding,goalMoving}
+             purpose: Kullanici profilini banda gonder
+
+#3   ~3ms    SPO2 Config GET
+             XiaomiHealthService.java L202
+             type=8   subtype=8 (CMD_CONFIG_SPO2_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: SPO2 ayarlarini oku
+
+#4   ~4ms    Heart Rate Config GET
+             XiaomiHealthService.java L203
+             type=8   subtype=10 (CMD_CONFIG_HEART_RATE_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Kalp atis ayarlarini oku
+
+#5   ~5ms    Standing Reminder Config GET
+             XiaomiHealthService.java L204
+             type=8   subtype=12 (CMD_CONFIG_STANDING_REMINDER_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hatirlatma ayarlarini oku
+
+#6   ~6ms    Stress Config GET
+             XiaomiHealthService.java L205
+             type=8   subtype=14 (CMD_CONFIG_STRESS_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Stres ayarlarini oku
+
+#7   ~7ms    Goal Notification Config GET
+             XiaomiHealthService.java L206
+             type=8   subtype=21 (CMD_CONFIG_GOAL_NOTIFICATION_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hedef bildirim ayarlarini oku
+
+#8   ~8ms    Goals Config GET
+             XiaomiHealthService.java L207
+             type=8   subtype=42 (CMD_CONFIG_GOALS_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hedef ayarlarini oku
+
+#9   ~9ms    Vitality Score Config GET
+             XiaomiHealthService.java L208
+             type=8   subtype=35 (CMD_CONFIG_VITALITY_SCORE_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Canlilik skoru ayarlarini oku
+
+#10  ~10ms   Screen On On Notifications GET
+             XiaomiNotificationService.java L97
+             type=7   subtype=CMD_SCREEN_ON_ON_NOTIFICATIONS_GET
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Bildirim ekrani ayarini oku
+
+#11  ~11ms   Canned Messages / Quick Replies
+             XiaomiNotificationService.java L98
+             type=7   subtype=requestCannedMessages()
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hazir mesajlari iste
+
+#12  ~12ms   Device Info GET
+             XiaomiSystemService.java L131
+             type=2   subtype=2 (CMD_DEVICE_INFO)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Cihaz bilgisi (fw/hw/sn) iste
+
+#13  ~13ms   Device Status GET
+             XiaomiSystemService.java L132
+             type=2   subtype=78 (CMD_DEVICE_STATE_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Band durumunu iste (giyim/sarj/uyku)
+
+#14  ~14ms   Battery State GET
+             XiaomiSystemService.java L135
+             type=2   subtype=1 (CMD_BATTERY)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Pil seviyesini iste
+
+#15  ~15ms   Password GET
+             XiaomiSystemService.java L136
+             type=2   subtype=9 (CMD_PASSWORD_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Sifre durumunu oku
+
+#16  ~16ms   Display Items GET
+             XiaomiSystemService.java L137
+             type=2   subtype=29 (CMD_DISPLAY_ITEMS_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Ekran duzenini oku
+
+#17  ~17ms   Camera Remote GET
+             XiaomiSystemService.java L138
+             type=2   subtype=7 (CMD_CAMERA_REMOTE_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Kamera remote ayarini oku
+
+#18  ~18ms   Widget Screens GET
+             XiaomiSystemService.java L139
+             type=2   subtype=51 (CMD_WIDGET_SCREENS_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Widget ekranlarini oku
+
+#19  ~19ms   Widget Parts GET
+             XiaomiSystemService.java L140
+             type=2   subtype=53 (CMD_WIDGET_PARTS_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Widget parcalarini oku
+
+#20  ~20ms   Workout Types GET
+             XiaomiSystemService.java L141
+             type=2   subtype=39 (CMD_WORKOUT_TYPES_GET)
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Egzersiz tiplerini oku
+
+#21  ~21ms   Alarms Request
+             XiaomiScheduleService.java L→requestAlarms()
+             type=17  subtype=CMD_ALARM_GET
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Alarm listesini iste
+
+#22  ~22ms   Reminders Request
+             XiaomiScheduleService.java L→requestReminders()
+             type=17  subtype=CMD_REMINDER_GET
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hatirlaticilari iste
+
+#23  ~23ms   World Clocks Request
+             XiaomiScheduleService.java L→requestWorldClocks()
+             type=17  subtype=CMD_WORLD_CLOCK_GET
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Dunya saatlerini iste
+
+#24  ~24ms   Measurement System
+             XiaomiWeatherService.java L77
+             type=10  subtype=CMD_SET_MEASUREMENT_SYSTEM
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Sicaklik birimini ayarla
+
+#25  ~25ms   Weather Locations GET
+             XiaomiWeatherService.java L80
+             type=10  subtype=CMD_GET_LOCATIONS
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Hava durumu lokasyonlarini iste
+
+#26  ~26ms   Calendar Sync
+             XiaomiCalendarService.java L60
+             type=12  subtype=CMD_SYNC_CALENDAR
+             channel: ProtobufCommand → SEND_ENCRYPTED
+             purpose: Takvimi esitle
+
+───────────────────────────────────────────────────────────────
+
+SERVIS INITIALIZE SIRASI (mServiceMap):
+
+1. authService     (type=1)   - auth zaten yapildi
+2. musicService    (type=18)  - initialize bos
+3. healthService   (type=8)   - UserInfo + 7 config GET
+4. notificationService (type=7) - screen on + canned messages
+5. scheduleService (type=17)  - alarms + reminders + world clocks
+6. weatherService  (type=10)  - measurement system + locations
+7. systemService   (type=2)   - Clock + DeviceInfo + DeviceState +
+                                Battery + Password + DisplayItems +
+                                Camera + Widgets + WorkoutTypes
+8. calendarService (type=12)  - calendar sync
+9. watchfaceService (type=4)  - initialize bos (state reset)
+10. dataUploadService (type=22) - initialize bos
+11. phonebookService (type=21) - initialize bos
+12. rpkService     (type=20)  - initialize bos
+
+───────────────────────────────────────────────────────────────
+
+ONEMLI: TUM PAKETLER SEND_ENCRYPTED (encrypted channel).
+        Ilk gonderilen en kritik paket: CLOCK (setCurrentTime).
+        Bu paket olmazsa band baglantiyi dusurebilir.
+───────────────────────────────────────────────────────────────

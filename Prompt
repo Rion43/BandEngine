@@ -1,87 +1,58 @@
-STOP.
-
 Auth artık çalışıyor.
 
-Bunu değiştirme.
+Disconnect problemi araştırılıyor.
 
-Şimdi sadece bağlantının neden koptuğunu araştır.
+26 initialize paketini aynı anda gönderme.
 
-Yapılacaklar:
+Deneysel ilerle.
 
-1.
+TEST 1
 
-Tüm disconnect eventlerini logla.
+Auth SUCCESS sonrası
 
-Örneğin:
+yalnızca
 
-gattserverdisconnected
+CMD_CLOCK (setCurrentTime)
 
-device disconnected
+gönder.
 
-characteristic invalid
+30 saniye bekle.
 
-notification stopped
+Bağlantı kopuyor mu logla.
 
-2.
+TEST 2
 
-Auth SUCCESS sonrasında
+Eğer hâlâ koparsa
 
-30 saniye boyunca hiçbir şey yapma.
+Clock +
 
-Sadece bağlantının açık kalıp kalmadığını izle.
+CMD_DEVICE_INFO_GET
 
-3.
+gönder.
 
-Gadgetbridge'i incele.
+Tekrar 30 saniye bekle.
 
-Auth SUCCESS sonrasında ilk 10 saniyede
+TEST 3
 
-hangi paketleri gönderiyor?
+Clock +
 
-Heartbeat?
+CMD_BATTERY_GET
 
-Ping?
+TEST 4
 
-KeepAlive?
+Clock +
 
-Battery Request?
+CMD_DEVICE_STATE_GET
 
-Status Request?
+Kurallar:
 
-Bunları sırayla raporla.
+- Auth koduna dokunma.
+- AES koduna dokunma.
+- SPPv2 koduna dokunma.
+- Aynı anda 26 paket gönderme.
+- Her test tek commit olsun.
+- Hangi paketin disconnect'i engellediğini bul.
 
-4.
+Amaç:
 
-Eğer Gadgetbridge auth sonrası
-
-hemen bir komut gönderiyorsa
-
-BandEngine de aynı komutu göndersin.
-
-5.
-
-Asla disconnect çağırma.
-
-Kodun hiçbir yerinde
-
-device.gatt.disconnect()
-
-BluetoothRemoteGATTServer.disconnect()
-
-çağrılıyorsa logla.
-
-6.
-
-Bluefy'nin disconnect eventini de logla.
-
-İlk hedef:
-
-AUTH SUCCESS sonrası
-
-30 saniye boyunca
-
-BLE bağlantısını açık tutmak.
-
-Hiçbir yeni özellik ekleme.
-
-Önce bağlantı kopmasının sebebini bul.
+BandEngine'in bağlantıyı açık tutan minimum paketi keşfetmek.

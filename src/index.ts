@@ -18,6 +18,7 @@ export { SppAuthProtocol } from './SppAuthProtocol.js';
 export * from './SppAuthCrypto.js';
 export * from './SppAuthMessages.js';
 export { SppAckTracker } from './SppAckTracker.js';
+export { encodeCommandClock } from './SppSystemMessages.js';
 
 import { Session } from './Session.js';
 import { BluetoothManager } from './BluetoothManager.js';

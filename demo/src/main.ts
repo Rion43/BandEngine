@@ -4,8 +4,9 @@ import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
+import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
-const VERSION = '6.0-idle-monitor';
+const VERSION = '6.0-test1-clock';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -323,9 +324,22 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ IDLE MONITOR: 30 saniye bağlantıyı izle ═══
-      log('info', '═══ IDLE: 30s connection monitor ═══');
-      log('info', 'No packets will be sent. Just watching BLE connection.');
+      // ═══ TEST 1: Auth success → only CMD_CLOCK → 30s idle ═══
+      log('info', '═══ TEST 1: CMD_CLOCK only ═══');
+      const clockProto = encodeCommandClock();
+      log('info', `Clock protobuf (${clockProto.length}B): ${toHex(clockProto)}`);
+
+      // Encrypt with auth keys (AES-CTR, key-as-IV)
+      const encClock = await authProtocol!.encryptV2(clockProto);
+      log('info', `Clock encrypted (${encClock.length}B): ${toHex(encClock)}`);
+
+      // Wrap in SPPv2 DATA(PROTOBUF_COMMAND, SEND_ENCRYPTED)
+      const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
+      log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
+      await writeBLE(sppClock);
+      log('info', 'Clock sent. Starting 30s connection monitor...');
+
+      // 30s idle — just watch
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const stillConnected = gattServer?.connected ?? false;
@@ -335,7 +349,7 @@ async function startConnect() {
           break;
         }
       }
-      log('info', '═══ IDLE MONITOR DONE ═══');
+      log('info', '═══ TEST 1 DONE ═══');
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

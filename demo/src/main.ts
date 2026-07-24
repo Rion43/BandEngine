@@ -6,7 +6,7 @@ import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
-const VERSION = '6.0-test2-deviceinfo';
+const VERSION = '6.0-test2-delay';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -332,6 +332,9 @@ async function startConnect() {
 
       const enc = await authProtocol!.encryptV2(cmd);
       log('info', `Encrypted (${enc.length}B): ${toHex(enc)}`);
+
+      // Gadgetbridge gibi: once ACK bitene kadar bekle, sonra gonder
+      await new Promise(r => setTimeout(r, 500));
 
       const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
       log('sent', `SPPv2 (${spp.length}B): ${hexLog(spp)}`);

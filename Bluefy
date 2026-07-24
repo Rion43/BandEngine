@@ -1,0 +1,77 @@
+BandEngine şu an sadece Bluefy üzerinde test ediliyor.
+
+Auth başarılı oluyor ancak yaklaşık 1 saniye sonra:
+
+gattserverdisconnected
+
+oluyor.
+
+Şu an amacımız kod değiştirmek değil.
+
+Amacımız Bluefy'nin bu proje için uygun olup olmadığını kanıtlamak.
+
+Yapmanı istediğim:
+
+BandEngine'e ayrıntılı bir BLE teşhis (diagnostic) modu ekle.
+
+Aşağıdaki her olayı zaman damgasıyla logla:
+
+1. navigator.bluetooth bilgileri
+2. userAgent
+3. Bluefy tespiti (Bluefy/Safari/iOS)
+4. BluetoothDevice.id
+5. BluetoothDevice.gatt.connected değişimleri
+6. connect() başlangıç ve bitiş
+7. getPrimaryServices()
+8. getCharacteristics()
+9. startNotifications()
+10. Her characteristic için:
+   - uuid
+   - properties
+   - notify
+   - indicate
+   - read
+   - write
+   - writeWithoutResponse
+11. characteristicvaluechanged olayları
+12. writeValue() öncesi ve sonrası
+13. writeValueWithoutResponse() öncesi ve sonrası
+14. Her gelen SPP paketi
+15. Her gönderilen SPP paketi
+16. Auth başlangıcı
+17. Auth SUCCESS
+18. Auth Result
+19. Encryption enabled
+20. Son gönderilen paket
+21. Son alınan paket
+22. Son callback
+23. Son notification zamanı
+24. gattserverdisconnected event
+25. event.target.gatt.connected
+26. Disconnect anındaki tüm dahili durum:
+    - authCompleted
+    - encryptionEnabled
+    - currentSequence
+    - writeQueueLength
+    - notificationEnabled
+    - activeCharacteristics
+27. Disconnect reason çıkarılabiliyorsa onu da logla.
+28. Eğer Bluefy herhangi bir hata objesi döndürüyorsa onu JSON olarak yazdır.
+
+Kurallar:
+
+- Auth algoritmasını değiştirme.
+- AES kodunu değiştirme.
+- SPPv2 kodunu değiştirme.
+- Paket sırasını değiştirme.
+- Sadece teşhis (diagnostic) logları ekle.
+
+Amaç:
+
+Loglardan şu soruya cevap verebilmek:
+
+"Bağlantıyı gerçekten Xiaomi Smart Band 9 mu kesiyor, yoksa Bluefy / iOS Web Bluetooth katmanı mı kapatıyor?"
+
+Bunu mümkün olduğunca kanıtlarla ortaya çıkar.
+
+Bluefy’ye özel workaround gerektiren yerleri de araştır. Örneğin startNotifications() tekrar çağrılmalı mı, characteristic cache’i farklı mı çalışıyor, writeValueWithoutResponse yerine writeValue mı kullanılmalı gibi Bluefy uyumluluk sorunlarını da kontrol et.

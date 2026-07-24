@@ -6,7 +6,7 @@ import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
-const VERSION = '6.0-test1-clock-fix';
+const VERSION = '6.0-test2-deviceinfo';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -324,22 +324,20 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // ═══ TEST 1: Auth success → only CMD_CLOCK → 30s idle ═══
-      log('info', '═══ TEST 1: CMD_CLOCK only ═══');
-      const clockProto = encodeCommandClock();
-      log('info', `Clock protobuf (${clockProto.length}B): ${toHex(clockProto)}`);
+      // Gadgetbridge birebir: sendCommand("get device info", 2, 2)
+      // Command{type=2, subtype=2} = 08 02 10 02 (4 bayt, body yok)
+      log('info', '═══ POST-AUTH: CMD_DEVICE_INFO_GET ═══');
+      const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
+      log('info', `Protobuf (4B): ${toHex(cmd)}`);
 
-      // Encrypt with auth keys (AES-CTR, key-as-IV)
-      const encClock = await authProtocol!.encryptV2(clockProto);
-      log('info', `Clock encrypted (${encClock.length}B): ${toHex(encClock)}`);
+      const enc = await authProtocol!.encryptV2(cmd);
+      log('info', `Encrypted (${enc.length}B): ${toHex(enc)}`);
 
-      // Wrap in SPPv2 DATA(PROTOBUF_COMMAND, SEND_ENCRYPTED)
-      const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
-      log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
-      await writeBLE(sppClock);
-      log('info', 'Clock sent. Starting 30s connection monitor...');
+      const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+      log('sent', `SPPv2 (${spp.length}B): ${hexLog(spp)}`);
+      await writeBLE(spp);
+      log('info', 'Sent. Starting 30s connection monitor...');
 
-      // 30s idle — just watch
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 1000));
         const stillConnected = gattServer?.connected ?? false;
@@ -349,7 +347,7 @@ async function startConnect() {
           break;
         }
       }
-      log('info', '═══ TEST 1 DONE ═══');
+      log('info', '═══ TEST DONE ═══');
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

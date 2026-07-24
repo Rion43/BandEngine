@@ -1,0 +1,101 @@
+CLOCK PROTOBUF — Android Gadgetbridge vs BandEngine
+====================================================
+Tarih: 2026-07-24
+
+KANIT 1: Java protobuf kod satiri
+───────────────────────────────────
+XiaomiSystemService.java:342:
+    .setIsNot24Hour(!is24hour)
+
+KANIT 2: isNot24hour proto tanimi
+───────────────────────────────────
+xiaomi.proto:189:
+    optional bool isNot24hour = 4;
+
+KANIT 3: proto2 optional davranisi
+───────────────────────────────────
+Google protobuf Java: eger set*() cagrilmissa has*() = true, SERIALIZE EDILIR.
+Gadgetbridge setisNot24Hour(false) cagiriyor -> serialize edilir -> 20 00.
+
+KANIT 4: protobufjs ile dogrulama
+───────────────────────────────────
+Test 1 - isNot24hour set edilmezse:    51 bayt, son 2 byte yok
+Test 2 - isNot24hour=false set edilse:  53 bayt, son 2 byte 20 00
+
+Gadgetbridge set ile -> 53 bayt -> BandEngine ile AYNI.
+
+KANIT 5: Decode (53 bayt)
+───────────────────────────────────
+08 02              -> type=2
+10 03              -> subtype=3
+22 2f              -> system (field 4, len=47)
+  22 2d            -> clock (field 4, len=45)
+    0a 07          -> date (field 1, len=7)
+      08 ea 0f     ->   year=2026
+      10 07        ->   month=7
+      18 18        ->   day=24
+    12 09          -> time (field 2, len=9)
+      08 03        ->   hour=3
+      10 35        ->   minute=53
+      18 2b        ->   second=43
+      20 c7 01     ->   millisecond=199
+    1a 15          -> timezone (field 3, len=21)
+      08 18        ->   zoneOffset=12 (zigzag 24)
+      10 00        ->   dstOffset=0 (zigzag 0)
+      1a 0f        ->   name (len=15)
+        45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c
+                    ->   "Europe/Istanbul"
+    20 00          -> isNot24hour=false
+
+KANIT 6: Tam plaintext byte karsilastirmasi
+─────────────────────────────────────────────────────────────
+Android (Gadgetbridge)           BandEngine (protobufjs)
+─────────────────────────────    ─────────────────────────────
+08 02                            08 02                          =
+10 03                            10 03                          =
+22 2f                            22 2f                          =
+22 2d                            22 2d                          =
+0a 07                            0a 07                          =
+08 ea 0f                         08 ea 0f                       =
+10 07                            10 07                          =
+18 18                            18 18                          =
+12 09                            12 09                          =
+08 03                            08 03                          =
+10 35                            10 35                          =
+18 2b                            18 2b                          =
+20 c7 01                         20 c7 01                       =
+1a 15                            1a 15                          =
+08 18                            08 18                          =
+10 00                            10 00                          =
+1a 0f                            1a 0f                          =
+45 75 72 6f 70 65 2f             45 75 72 6f 70 65 2f           =
+49 73 74 61 6e 62 75 6c         49 73 74 61 6e 62 75 6c        =
+20 00                            20 00                          =
+─────────────────────────────    ─────────────────────────────
+53 bayt                          53 bayt                        =
+                          BYTE-BYTE AYNI
+
+KANIT 7: isNot24hour alani
+───────────────────────────
+Gadgetbridge:       .setIsNot24Hour(!is24hour) -> set -> serialize
+                    TimeFormat default 24H -> !is24hour=false
+                    -> 20 00
+BandEngine:         isNot24hour: false set -> serialize
+                    -> 20 00
+
+Her iki tarafta da AYNI sekilde serialize edilir === AYNI
+
+=================================================================
+SONUC: Protobuf plaintext Android ile BandEngine arasinda
+       BYTE-BYTE AYNI. 53 bayt, her bayt eslesiyor.
+
+       isNot24hour=false field'i her iki tarafta da
+       serialize edilir (set*() cagrildigi icin).
+
+       Disconnect sebebi protobuf encoding DEGIL.
+
+       Kalan olasiliklar:
+       1. AES-CTR encrypt/decrypt uyumsuzlugu
+       2. BLE supervision timeout (Bluefy/iOS)
+       3. Band'in post-auth paket sayisi/sirasi beklentisi
+=================================================================

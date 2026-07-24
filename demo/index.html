@@ -50,6 +50,23 @@
         <button id="btn-disconnect" disabled>⏏ Disconnect</button>
       </div>
 
+      <div class="panel" id="panel-diag" style="margin-top:-8px">
+        <h2 style="cursor:pointer" id="diag-toggle">🧪 Diagnostic Test ▾</h2>
+        <div id="diag-body">
+          <div class="diag-radio" data-value="0"><span class="diag-dot">○</span> Normal (4 komut: Clock+DI+Bat+State)</div>
+          <div class="diag-radio" data-value="1"><span class="diag-dot">○</span> TEST 1: Hiçbir şey gönderme (30s idle)</div>
+          <div class="diag-radio" data-value="2"><span class="diag-dot">○</span> TEST 2: Sadece Clock</div>
+          <div class="diag-radio" data-value="3"><span class="diag-dot">○</span> TEST 3: Sadece Battery</div>
+          <div class="diag-radio" data-value="4"><span class="diag-dot">○</span> TEST 4: Sadece DeviceInfo</div>
+          <div class="diag-radio" data-value="5"><span class="diag-dot">○</span> TEST 5: Sadece DeviceState</div>
+          <div class="diag-radio" data-value="6"><span class="diag-dot">○</span> TEST 6: Clock→500ms→DI→500ms→Bat→500ms→State</div>
+          <div class="diag-radio" data-value="7"><span class="diag-dot">○</span> TEST 7: Clock→1000ms→DI→1000ms→Bat→1000ms→State</div>
+          <div class="diag-radio" data-value="8"><span class="diag-dot">○</span> TEST 8: Clock + DeviceInfo</div>
+          <div class="diag-radio" data-value="9"><span class="diag-dot">○</span> TEST 9: Clock + Battery</div>
+          <div class="diag-radio" data-value="10"><span class="diag-dot">○</span> TEST 10: Clock + DeviceState</div>
+        </div>
+      </div>
+
       <div class="panel" id="panel-battery" style="display:none">
         <h2>🔋 Battery</h2>
         <div class="stat-grid">

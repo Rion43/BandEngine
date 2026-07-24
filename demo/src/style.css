@@ -232,3 +232,16 @@ button.danger:hover:not(:disabled) { background: #450a0a; }
 #log .entry.info { color: var(--text-dim); }
 #log .entry.error { color: var(--red); }
 #log .entry.warn { color: var(--yellow); }
+
+/* ── Diagnostic Panel ── */
+#diag-body { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.diag-radio {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 12px; color: var(--text-dim);
+  transition: background .1s, color .1s;
+}
+.diag-radio:hover { background: var(--surface2); color: var(--text); }
+.diag-radio.selected { background: var(--surface2); color: var(--accent); font-weight: 600; }
+.diag-radio.selected .diag-dot { color: var(--accent); }
+.diag-radio .diag-dot { font-size: 14px; width: 16px; text-align: center; flex-shrink: 0; }

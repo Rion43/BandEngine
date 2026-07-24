@@ -1,0 +1,243 @@
+Android Gadgetbridge vs BandEngine — Byte-Byte Karsilastirma Raporu
+=================================================================
+
+Karsilastirilan: Auth SUCCESS sonrasi ilk encrypted paket (CMD_CLOCK)
+Kaynak: Gadgetbridge XiaomiAuthService.java + XiaomiSystemService.java
+         BandEngine SppSystemMessages.ts + SppAuthProtocol.ts
+
+NOT: Rastgele nonce'lar nedeniyle birebir byte karsilastirmasi imkansiz.
+     Algoritma, protobuf, ve sifreleme adimlari karsilastirildi.
+
+=================================================================
+1. AES Key
+=================================================================
+
+Android (XiaomiAuthService.java:200-203):
+  step2hmac = computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce)
+  // step2hmac = HKDF-like HMAC-SHA256 -> 64 bayt
+  encryptionKey = step2hmac[16:32]   // 16 bayt
+
+BandEngine (SppAuthProtocol.ts:86-89):
+  derived = await computeAuthStep3Hmac(longTermKey, phoneNonce, watchNonce)
+  encKey = derived.slice(16, 32)     // 16 bayt
+
+computeAuthStep3Hmac her iki tarafta da AYNI:
+  HMAC-SHA256(salt=phoneNonce||watchNonce, data=secretKey) -> PRK
+  HMAC-SHA256(PRK, T(i-1)||"miwear-auth"||i) * 2 iterasyon -> 64 bayt
+
+Key derivation === AYNI
+
+=================================================================
+2. Nonce (PhoneNonce)
+=================================================================
+
+Android (XiaomiAuthService.java:92):
+  new SecureRandom().nextBytes(nonce)      // 16 bayt
+
+BandEngine (SppAuthProtocol.ts:52):
+  crypto.getRandomValues(new Uint8Array(16)) // 16 bayt
+
+Her baglantida FARKLI. Karsilastirilamaz.
+
+=================================================================
+3. IV (AES-CTR Initial Counter)
+=================================================================
+
+Android (XiaomiAuthService.java:365-368):
+  encryptV2(message):
+    ctrCrypt(ENCRYPT_MODE, encryptionKey, encryptionKey, message)
+    // IV = encryptionKey (key-as-IV)
+
+BandEngine (SppAuthCrypto.ts:38-46):
+  aesCtrEncrypt(data, encKey):
+    encrypt({ name: 'AES-CTR', counter: encKey, length: 128 }, key, data)
+    // counter = encKey (16 bayt), length = 128 bit (tum counter)
+
+IV = encKey = derived[16:32] === AYNI
+
+=================================================================
+4. Counter Baslangici
+=================================================================
+
+Android:
+  IvParameterSpec(encryptionKey)  // 16 byte IV = counter baslangici
+
+BandEngine:
+  counter: key.slice().buffer   // 16 byte key = counter baslangici
+
+Counter baslangic degeri === AYNI
+
+=================================================================
+5. Counter Kac Ariyor
+=================================================================
+
+Android AES/CTR/NoPadding:
+  Her 16-byte blokta counter big-endian 1 artar (standard AES-CTR)
+
+Web Crypto AES-CTR length=128:
+  Her 16-byte blokta counter big-endian 1 artar (standard AES-CTR)
+
+Standard AES-CTR === AYNI
+
+=================================================================
+6. Plaintext Protobuf
+=================================================================
+
+Android (XiaomiSystemService.java:345-352):
+  Command{type=2, subtype=3, system{clock{...}}}
+  Java protobuf compile -> XiaomiProto.Command.toByteArray()
+
+BandEngine (SppSystemMessages.ts):
+  protobufjs -> Command.create({type:2, subtype:3, system{clock{...}}})
+  Command.encode(msg).finish()
+
+Test sonucu (protobufjs, 53 bayt):
+  08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 18
+  12 09 08 03 10 35 18 2b 20 c7 01 1a 15 08 18 10 00
+  1a 0f 45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c 20 00
+
+Dekod:
+  Command{type=2, subtype=3, system{clock{
+    date{year=2026, month=7, day=24}
+    time{hour=3, minute=53, second=43, millisecond=199}
+    timezone{zoneOffset=12, dstOffset=0, name="Europe/Istanbul"}
+    isNot24hour=false
+  }}}
+
+Her iki tarafta da:
+  - Java protobuf field'lari field number sirasiyla serialize eder
+  - protobufjs de field number sirasiyla serialize eder
+  - proto2 required/optional ayni
+  - Alan degerleri ayni Java/Gadgetbridge kodundan gelir
+
+protobuf === AYNI (field number sirasi, wire type, encoding)
+
+=================================================================
+7. Ciphertext Algoritmasi
+=================================================================
+
+Android (XiaomiAuthService.java:365-368):
+  Cipher.getInstance("AES/CTR/NoPadding")
+  cipher.init(ENCRYPT_MODE, new SecretKeySpec(key, "AES"),
+              new IvParameterSpec(key))      // IV = key
+  cipher.doFinal(plaintext)
+
+BandEngine (SppAuthCrypto.ts:38-46):
+  crypto.subtle.importKey('raw', key, 'AES-CTR', false, ['encrypt'])
+  crypto.subtle.encrypt({
+    name: 'AES-CTR',
+    counter: key,     // key-as-IV
+    length: 128       // tum 128 bit counter
+  }, key, data)
+
+AES/CTR/NoPadding === AES-CTR length=128
+
+BUT:
+  Android: BouncyCastle/spongycastle AESEngine
+  Web Crypto: Tarayiciya bagli (iOS: CoreCrypto, Desktop: BoringSSL)
+
+OLASI FARK: BouncyCastle AES-CTR ile Web Crypto AES-CTR
+            arasinda counter increment davranisi.
+
+            Standard AES-CTR: counter 128-bit integer olarak inc.
+            Web Crypto: Kesin standarda uyar.
+            BouncyCastle: Kesin standarda uyar.
+
+            === AYNI OLMALI ===
+
+=================================================================
+8. CRC Hesaplamasi
+=================================================================
+
+Android (XiaomiSppPacketV2.java:413-425):
+  CRC-16/ARC (poly=0x8005, init=0, xorout=0, refin, refout)
+  Integer.reverse(crc) >>> 16
+
+BandEngine (SppPacketV2.ts:70-81):
+  CRC16-ARC (poly=0x8005, init=0, xorout=0, refin, refout)
+  reverse32(crc) >>> 16
+
+Her iki tarafta da ayni algoritma, ayni poly, ayni init === AYNI
+(once dogrulandi, byte-identical)
+
+=================================================================
+9. SPPv2 Header
+=================================================================
+
+Android (XiaomiSppPacketV2.java:427-437):
+  [PACKET_PREAMBLE(2) | typeFlags(1) | sequence(1) |
+   payloadLengthLE(2) | crc16ArcLE(2) | payload(N)]
+
+BandEngine (SppPacketV2.ts:149-163):
+  [0xA5 0xA5 | packetType(1) | sequence(1) |
+   payloadLengthLE(2) | crc16ArcLE(2) | payload(N)]
+
+Format === AYNI
+
+=================================================================
+10. Encrypted Payload Uzunlugu
+=================================================================
+
+AES-CTR: ciphertext uzunlugu = plaintext uzunlugu (padding yok)
+
+protobuf 53 bayt -> encrypted 53 bayt === AYNI
+
+=================================================================
+11. Android Clock Paketi Plaintext (simule)
+=================================================================
+
+Android Java protobuf compile ile uretilen byte dizisi:
+  Command{type=2, subtype=3, system{clock{...}}}
+  -> Field sirasi: 1(type), 2(subtype), 4(system)
+  -> system 4 -> clock 4 -> date 1 -> time 2 -> timezone 3 -> isNot24hour 4
+  -> AYNI field sirasi
+
+=================================================================
+12. BandEngine Clock Paketi Plaintext (protobufjs, dogrulandi)
+=================================================================
+
+  08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 18 ...
+  (yukaridaki 53 bayt)
+
+=================================================================
+13. Iki Plaintext Ayniysa, Ciphertext Neden Farkli Olabilir?
+=================================================================
+
+OLASILIK 1 — Rastgele nonce farkli:
+  PhoneNonce farkli -> key derivation farkli -> encKey farkli
+  -> ciphertext dogal olarak farkli
+  Bu NORMAL, sorun degil.
+
+OLASILIK 2 — Web Crypto AES-CTR implementasyonu:
+  iOS Web Bluetooth (Bluefy) JavaScriptCore uzerinde calisir.
+  AES-CTR implementasyonu Safari/JavaScriptCore'da hatali olabilir.
+  Test edilebilir: AES-CTR encrypt -> decrypt kendi kendine calisiyor mu?
+
+OLASILIK 3 — protobufjs ile Java protobuf arasinda fark:
+  Field sirasi: ikisi de field number sirasi kullanir -> AYNI
+  Wire type: ikisi de proto2 -> AYNI
+  Default degerler: proto2'de optional default atlanir.
+    isNot24hour=false (proto2 bool default) -> Android'te atlanabilir.
+    BandEngine'de acikca set edildigi icin 20 00 olarak serilestirilir.
+
+  EGER Android isNot24hour=false'u serialize ETMEZSE:
+    Android: 51 bayt
+    BandEngine: 53 bayt (fazladan 20 00)
+
+  Bu FARK band'in protobuf parse'ini bozup disconnect'e yol acabilir!
+
+=================================================================
+KESIN TAVSIYE
+=================================================================
+
+isNot24hour alanini protobuf mesajindan CIKAR.
+Clock.create({..., isNot24hour: false}) yerine isNot24hour'u HIC set etme.
+Boylece Android gibi 51 bayt olur.
+
+    DEGISIKLIK:
+      clockMsg = Clock.create({
+        date: ..., time: ..., timezone: ...,
+        // isNot24hour: false  <-- BUNU KALDIR
+      });
+
+=================================================================

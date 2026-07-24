@@ -1,61 +1,97 @@
-Artık auth doğru çalışıyor.
+BandEngine'e kalıcı bir "Diagnostic Test Panel" ekle.
 
-Clock, DeviceInfo, Battery ve DeviceState gönderiliyor.
+Amaç:
+Tek build ile farklı test senaryolarını seçebilmek.
+Her test mevcut auth akışını kullansın, sadece auth SUCCESS sonrasındaki davranış değişsin.
 
-Ancak hiçbirine ACK veya DATA cevabı gelmiyor.
+UI:
 
-31 ms sonra gattserverdisconnected geliyor.
+──────────────────────────────
+Diagnostic Mode
 
-Yeni görev:
+( ) Normal (mevcut davranış)
 
-Gönderilen paketlerin gerçekten BLE characteristic'e yazıldığını doğrula.
+( ) TEST 1
+Auth SUCCESS sonrası 30 saniye hiçbir paket gönderme.
 
-Şunları logla:
+( ) TEST 2
+Sadece Clock gönder.
 
-1.
-writeValueWithoutResponse() çağrılmadan önce
+( ) TEST 3
+Sadece Battery gönder.
 
-2.
-writeValueWithoutResponse() Promise resolve zamanı
+( ) TEST 4
+Sadece DeviceInfo gönder.
 
-3.
-kaç byte yazıldı
+( ) TEST 5
+Sadece DeviceState gönder.
 
-4.
-hangi characteristic UUID
+( ) TEST 6
+Clock -> 500ms bekle -> DeviceInfo -> 500ms -> Battery -> 500ms -> DeviceState
 
-5.
-hangi opcode
+( ) TEST 7
+Clock -> 1000ms bekle -> DeviceInfo -> 1000ms -> Battery -> 1000ms -> DeviceState
 
-6.
-kaç ms sürdü
+( ) TEST 8
+Clock + DeviceInfo
 
-7.
-Bluefy herhangi bir exception döndürdü mü
+( ) TEST 9
+Clock + Battery
 
-8.
-write tamamlandıktan sonra characteristic hâlâ valid mi
+( ) TEST 10
+Clock + DeviceState
 
-9.
-gatt.connected write sonrası true mı
+( ) TEST 11
+Sadece keepalive (hiç protobuf gönderme, sadece bağlantıyı açık tutmaya çalış)
 
-10.
-İlk disconnect ile son write arasında kaç ms var
+( ) TEST 12
+Auth SUCCESS sonrası encryption aktif olsun ama hiçbir encrypted protobuf gönderme.
 
-Bunları tablo halinde logla.
+──────────────────────────────
 
-Ayrıca Gadgetbridge ile karşılaştır:
+Connect butonu aynı kalsın.
 
-Gadgetbridge Clock paketini hangi characteristic'e yazıyor?
+Akış:
 
-Write mi kullanıyor?
+Connect
+↓
 
-WriteWithoutResponse mı kullanıyor?
+Auth
 
-Signed Write mı kullanıyor?
+↓
 
-Reliable Write mı kullanıyor?
+AUTH SUCCESS
 
-Write Type tam olarak nedir?
+↓
 
-Bunu kaynak koddan kesin olarak bul.
+Seçilen test otomatik çalışsın.
+
+Her test başında log:
+
+========== TEST X START ==========
+
+Her test sonunda:
+
+========== TEST X END ==========
+
+Loglarda ayrıca:
+
+- Test adı
+- Gönderilen paketler
+- Gönderim zamanı
+- Disconnect zamanı
+- Disconnect'e kadar geçen süre
+- Son ACK
+- Son DATA
+- Son write
+
+yazdır.
+
+Kurallar:
+
+- Auth koduna dokunma.
+- AES koduna dokunma.
+- SPPv2 koduna dokunma.
+- Sadece auth sonrası davranışı test moduna göre değiştir.
+
+Bu test paneli kalıcı olsun; ileride yeni testler kolayca eklenebilsin.

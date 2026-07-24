@@ -1,0 +1,104 @@
+Gadgetbridge BLE Write Modeli — Kesin Rapor
+==============================================
+Kaynak: Gadgetbridge master branch, Xiaomi Band 9 (XiaomiBleProtocolV2)
+Tarih: 2026-07-24
+
+1-2. Write Type: WRITE_TYPE_NO_RESPONSE
+────────────────────────────────────────
+WriteAction.java:83:
+  gatt.writeCharacteristic(characteristic, value, characteristic.getWriteType())
+
+005F characteristic property'leri (log'dan):
+  PROPERTY_WRITE = false
+  PROPERTY_WRITE_NO_RESPONSE = true
+
+Android otomatik olarak WRITE_TYPE_NO_RESPONSE kullanir.
+BandEngine writeValueWithoutResponse() = AYNI.
+
+3-4. setWriteType() Degisikligi
+────────────────────────────────
+AbstractBTLESingleDeviceSupport.java:311-317:
+  if (prefs_device_gatt_synchronous_writes && WRITE_TYPE_NO_RESPONSE) {
+      if (PROPERTY_WRITE var) { setWriteType(WRITE_TYPE_DEFAULT); }
+  }
+
+005F'de PROPERTY_WRITE yok. Bu degisiklik Band 9 icin ASLA tetiklenmez.
+
+Kesin: Xiaomi Band 9 icin write type degistirilmez. WRITE_TYPE_NO_RESPONSE kullanilir.
+
+5-6. writeCharacteristic() Cagrisi
+───────────────────────────────────
+WriteAction.java:83 (API 33+):
+  gatt.writeCharacteristic(characteristic, value, characteristic.getWriteType())
+
+WriteAction.java:94-96 (legacy API <33):
+  characteristic.setValue(value)
+  gatt.writeCharacteristic(characteristic)
+
+Her iki API de WRITE_TYPE_NO_RESPONSE ile yazar.
+
+7-8. Callback Bekleme — KRITIK
+───────────────────────────────
+BtLEQueue.java:188-197:
+  action.run(mBluetoothGatt)          // write baslat
+  waitForResult = action.expectsResult()  // WriteAction: her zaman true
+  if (waitForResult) {
+      mWaitForActionResultLatch.await()  // callback gelene kadar BLOKE
+  }
+
+WriteAction.java:111:
+  public boolean expectsResult() { return true; }
+
+Android'de WRITE_TYPE_NO_RESPONSE bile olsa,
+SDK 33+ gatt.writeCharacteristic() -> onCharacteristicWrite callback'ini tetikler.
+Callback yazma Bluetooth stack'e queue'ya alindiginda gelir (karşı taraf gordugunde degil).
+
+Web Bluetooth writeValueWithoutResponse():
+  Promise resolve = veri Bluetooth stack'e gonderildiginde
+  Android callback ile ayni anlamda
+
+FARK YOK.
+
+9. SPP ACK Gelmeden Sonraki Write
+──────────────────────────────────
+Gadgetbridge SPP ACK'i beklemez.
+TransactionBuilder icindeki tum WriteAction'lar BLE callback seviyesinde siralanir:
+  1. writeCharacteristic() -> onCharacteristicWrite callback
+  2. callback gelince latch cozulur
+  3. sonraki action baslar
+
+SPP ACK notification ayri bir kanaldan (notify characteristic) gelir.
+BLE write sirasi ile SPP ACK arasinda BAGLANTI YOK.
+
+10. Band 9 Icin Ozel Write Queue
+─────────────────────────────────
+XiaomiBleProtocolV2.java: Ozel write queue YOK.
+Standart TransactionBuilder.writeChunkedData() + WriteAction kullanir.
+Herhangi bir ozel queue, buffer, veya retry mekanizmasi yok.
+
+======================================================================
+OZET: Web Bluetooth vs Android Gadgetbridge
+======================================================================
+
+Xiaomi Smart Band 9 icin BLE write modeli:
+
+                  | Android Gadgetbridge      | Web Bluetooth (BandEngine)
+                  |---------------------------|---------------------------
+Write Type        | WRITE_TYPE_NO_RESPONSE    | writeValueWithoutResponse()
+Write Method      | writeCharacteristic()     | writeValueWithoutResponse()
+Callback/Signal   | onCharacteristicWrite     | Promise.resolve()
+Callback Anlami   | queue'ya alindi           | queue'ya alindi
+Write Sirasi      | latch ile sirali          | await ile sirali
+SPP ACK Bekleme   | beklemez                  | beklemez
+Ozel Queue        | yok                       | yok
+
+Sonuc: Android ile Web Bluetooth write modeli arasinda
+Xiaomi Band 9 icin HICBIR FARK YOKTUR.
+
+Baglanti kopmasinin nedeni write modeli DEGILDIR.
+Muhtemel nedenler (elenmemis):
+  - Web Crypto AES-CTR ile Android AES/CTR/NoPadding arasinda fark
+  - protobuf encoding farki
+  - Band'in beklentisi: post-auth paketleri sayisi/sirasi
+  - Bluefy/iOS Web Bluetooth stack'inde BLE supervision timeout
+======================================================================

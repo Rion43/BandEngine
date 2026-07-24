@@ -1,17 +1,214 @@
-AUTH SUCCESS!
-[03:53:43.198] ═══ TEST 1: CMD_CLOCK only ═══
-[03:53:43.219] Clock protobuf (53B): 08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 18 12 09 08 03 10 35 18 2b 20 c7 01 1a 15 08 18 10 00 1a 0f 45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c 20 00
-[03:53:43.221] Clock encrypted (53B): 2e 88 f9 d1 3f 01 be 1a 30 64 d9 7d c0 8c 45 4e e1 64 97 aa 0d 57 dc d9 e9 a4 b4 4c 70 ac 26 19 3c 8d fb b1 8a df 7b c6 8e a7 de bb dc 44 63 02 19 f8 ea d4 ea
-[03:53:43.222] Clock SPPv2 (63B): (63B) a5 a5 03 02 37 00 67 e0 01 02 2e 88 f9 d1 3f 01 be 1a 30 64 d9 7d c0 8c 45 4e e1 64 97 aa 0d 57 dc d9 e9 a4 b4 4c 70 ac 26 19 3c 8d fb b1 8a df 7b c6 8e a7 de bb dc 44 63 02 19 f8 ea d4 ea
-[03:53:43.226] Clock sent. Starting 30s connection monitor...
-[03:53:43.268] ❗ DISCONNECT: gattserverdisconnected event
-[03:53:43.269] ❗ Device: Xiaomi Smart Band 9 0A4B
-[03:53:44.227] [1s] connected=false queue=3 sppBuf=0
-[03:53:44.231] ❌ Connection LOST at 1s
-[03:53:44.233] ═══ TEST 1 DONE ═══
-[03:53:44.234] ═══ FULL AUTH FLOW DONE ═══
+I believe we are no longer debugging authentication.
 
-  Böyle dedide bazı yazılar sarı renkli bişey ifade   
-  ediyormu bide elinde gadget bridge projesi var      
-  ondan re et ve şu bağlantı kopma sorununu çöz       
-  artıkkkkk
+Authentication is already COMPLETE.
+
+Confirmed facts:
+
+✔ SessionConfig succeeds.
+✔ PhoneNonce exchange succeeds.
+✔ WatchNonce exchange succeeds.
+✔ AuthStep3 succeeds.
+✔ AUTH SUCCESS is received.
+✔ If NO encrypted packets are sent afterwards, the band still disconnects after about 70-100ms.
+
+Therefore:
+
+- HKDF is correct.
+- AES is correct.
+- Protobuf is correct.
+- SessionConfig is correct.
+- Authentication is correct.
+
+Do NOT spend time on cryptography.
+
+========================================================
+
+I believe the problem is inside the Bluetooth lifecycle.
+
+Please prove or disprove the following hypothesis.
+
+========================================================
+
+Hypothesis:
+
+BandEngine does not reproduce the Android BluetoothGatt lifecycle that Gadgetbridge relies on.
+
+Possible missing behaviors include:
+
+1.
+TransactionBuilder callback ordering.
+
+Android:
+
+write
+↓
+
+onCharacteristicWrite
+↓
+
+next write
+
+BandEngine:
+
+writeWithoutResponse
+↓
+
+Promise resolved
+↓
+
+next write
+
+Determine whether any Xiaomi code depends on write callbacks.
+
+--------------------------------------------------------
+
+2.
+Descriptor callback ordering.
+
+Android:
+
+setCharacteristicNotification()
+
+↓
+
+write CCCD descriptor
+
+↓
+
+onDescriptorWrite()
+
+↓
+
+continue
+
+Does XiaomiBleProtocolV2 assume that onDescriptorWrite has completed before authentication begins?
+
+--------------------------------------------------------
+
+3.
+AUTH SUCCESS callback chain.
+
+Trace EVERY executed function after AUTH SUCCESS until the first normal encrypted command.
+
+Produce the complete call graph.
+
+Search for:
+
+Handler
+Runnable
+Executor
+postDelayed
+Timer
+Queue
+TransactionBuilder
+Callbacks
+
+I suspect an initialization task exists that BandEngine never performs.
+
+--------------------------------------------------------
+
+4.
+Disconnect handling.
+
+I need evidence.
+
+Does Gadgetbridge ever receive an immediate disconnect after AUTH SUCCESS?
+
+If yes:
+
+show the exact code path.
+
+show the reconnect path.
+
+show how encryption state survives reconnect.
+
+If not:
+
+prove that the connection stays alive.
+
+Do NOT speculate.
+
+--------------------------------------------------------
+
+5.
+Reconnect.
+
+Xiaomi documentation explicitly expects automatic reconnect behavior.
+
+Determine whether XiaomiBleProtocolV2 relies on reconnect after authentication.
+
+If reconnect is part of the expected lifecycle,
+show exactly how Gadgetbridge restores the encrypted session.
+
+--------------------------------------------------------
+
+6.
+MTU.
+
+Determine whether requestMtu(512) affects anything after authentication.
+
+Trace every usage of:
+
+maxWriteSize
+
+Determine whether authentication packets,
+SPPv2 packets,
+or only file transfers depend on MTU.
+
+--------------------------------------------------------
+
+7.
+Search the repository for ANY packet sent automatically after AUTH SUCCESS.
+
+I want every packet between:
+
+AUTH SUCCESS
+
+and
+
+Clock synchronization.
+
+List:
+
+protobuf type
+subtype
+purpose
+call stack
+
+--------------------------------------------------------
+
+8.
+Search for hidden keepalive packets,
+ACK packets,
+heartbeat packets,
+or session confirmation packets.
+
+Ignore protobuf decoding.
+
+Only search for lifecycle behavior.
+
+========================================================
+
+Important:
+
+Do not answer with theories.
+
+Only output findings that are backed by source code.
+
+For every finding provide:
+
+- filename
+- function
+- line numbers
+- complete execution path
+
+If something cannot be proven from source code,
+explicitly say "NOT PROVEN".
+
+========================================================
+
+I strongly suspect the bug is NOT inside authentication anymore.
+
+I suspect it is inside the Bluetooth lifecycle immediately after AUTH SUCCESS.
+
+Please try to prove me wrong.

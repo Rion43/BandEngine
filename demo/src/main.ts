@@ -259,6 +259,7 @@ const TEST_NAMES: Record<number, string> = {
   10: 'TEST 10: Clock+DeviceState',
   11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
   12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
+  13: 'TEST 13: Reconnect sonrasi Clock',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -344,7 +345,37 @@ async function runPostAuth(): Promise<void> {
       log('error', '❌ AES-CTR self-test FAILED! Web Crypto bug!');
     }
     await monitorConnection(30);
-  } else {
+  } else if (test === 13) {
+    // TEST 13: Disconnect olunca reconnect + Clock
+    log('info', '═══ TEST 13: RECONNECT AFTER DISCONNECT ═══');
+    await sendEncrypted(encodeCommandClock(), 'Clock');
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const stillConnected = gattServer?.connected ?? false;
+      log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
+      if (!stillConnected && gattServer) {
+        log('info', '🔄 Disconnect oldu, yeniden bağlanıyorum...');
+        try {
+          const dev = (gattServer as any).device;
+          if (dev) {
+            gattServer = await dev.gatt.connect();
+            log('info', 'Reconnect OK');
+            if (notifyChar) {
+              notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
+              notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+              try { await notifyChar.startNotifications(); } catch {}
+            }
+            await sendEncrypted(encodeCommandClock(), 'Clock(2)');
+            log('info', '✅ Reconnect + Clock success');
+          }
+        } catch (e: any) {
+          log('error', `Reconnect failed: ${e.message}`);
+        }
+        await new Promise(r => setTimeout(r, 5000));
+        log('info', `After reconnect: connected=${gattServer?.connected ?? false}`);
+        break;
+      }
+    }
     // TEST 0: Normal — all 4 commands immediately
     await sendEncrypted(encodeCommandClock(), 'Clock');
     await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');

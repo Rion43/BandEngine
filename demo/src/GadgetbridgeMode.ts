@@ -1,624 +1,601 @@
 // GadgetbridgeMode — Xiaomi Band 9 Gadgetbridge baglanti akisi, birebir
-// Kaynak:
-//   XiaomiSupport.java (connect, onAuthSuccess, mServiceMap)
-//   XiaomiBleProtocolV2.java (initializeDevice, encodePacket, processPacket)
-//   XiaomiAuthService.java (startEncryptedHandshake, handleCommand, encryptV2)
-//   XiaomiSppPacketV2.java (encode, DataPacket, SessionConfigPacket)
-//   BtLEQueue.java (connect, handleDisconnected, write queue)
-//   WriteAction.java (writeCharacteristic, expectsResult)
-//   AbstractBTLESingleDeviceSupport.java (connect, disconnect, setContext)
+// Kaynak kod satirlari her fonksiyonda belirtilmistir.
+//
+// Ana akis:
+//   BtLEQueue.connect() -> initializeDevice() -> SessionConfig
+//   -> processPacket -> startEncryptedHandshake()
+//   -> PhoneNonce -> WatchNonce -> AuthStep3 -> AuthSuccess
+//   -> onAuthSuccess() -> Clock + mServiceMap.initialize()
+//   -> handleDisconnected -> autoReconnect
 
 import { log, hex as hexLog } from './logger.js';
-import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src/SppPacketV2.js';
+import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode, SessionConfigOpcode } from '../../src/SppPacketV2.js';
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { toHex } from '../../src/SppAuthMessages.js';
-import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
+import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
-// ── Enum: GBDevice.State (GB AbstractBTLESingleDeviceSupport) ──
-const DEV_STATE = { INITIALIZING: 1, AUTHENTICATING: 2, INITIALIZED: 3, CONNECTED: 4, NOT_CONNECTED: -1 };
+// ── GBDevice.State (GB AbstractBTLESingleDeviceSupport) ──
+const State = { NONE: 0, INITIALIZING: 1, AUTHENTICATING: 2, INITIALIZED: 3, CONNECTED: 4, NOT_CONNECTED: 5, WAITING_FOR_RECONNECT: 6 };
 
-// ── GB XiaomiSupport.mServiceMap (XiaomiSupport.java:92-105) ──
-// initialize() sirayla: auth(1) -> music(18) -> health(8) -> notif(7) -> schedule(17)
-//   -> weather(10) -> system(2) -> calendar(12) -> watchface(4) -> dataUpload(22)
-//   -> phonebook(21) -> rpk(20)
-// GB: COMMAND_TYPE her service'de:
-const SERVICE_INIT_ORDER: { type: number; name: string; commands: { subtype: number; task: string }[] }[] = [
-  // XiaomiAuthService (type=1): initialize() bos
-  { type: 1, name: 'auth', commands: [] },
-  // XiaomiMusicService (type=18): initialize() bos
-  { type: 18, name: 'music', commands: [] },
-  // XiaomiHealthService (type=8): setUserInfo + 7 config GET (HealthService.java:195-208)
-  { type: 8, name: 'health', commands: [
-    { subtype: 0, task: 'set user info' },
-    { subtype: 8, task: 'get spo2 config' },
-    { subtype: 10, task: 'get heart rate config' },
-    { subtype: 12, task: 'get standing reminders config' },
-    { subtype: 14, task: 'get stress config' },
-    { subtype: 21, task: 'get goal notification config' },
-    { subtype: 42, task: 'get goals config' },
-    { subtype: 35, task: 'get vitality score config' },
+// ── GB handleDisconnected status kodlari (BtLEQueue.java:421-435) ──
+function isForceDisconnectStatus(status: number): boolean {
+  return status === 0x81 || status === 0x85 || status === 0x08 || status === 0x93;
+}
+
+// ── GB mServiceMap initialize sirasi (XiaomiSupport.java:92-105) ──
+//   Her service.initialize() icinde kendi sendCommand'lari
+//   Gadgetbridge'de COMMAND_TYPE her service'in kendi sabiti
+const SERVICE_INIT: { type: number; name: string; commands: { subtype: number; desc: string }[] }[] = [
+  // XiaomiAuthService (COMMAND_TYPE=1): initialize() BOS
+  // XiaomiMusicService (COMMAND_TYPE=18): initialize() BOS
+  // XiaomiHealthService (COMMAND_TYPE=8): setUserInfo + 7 config GET (HealthService.java:195-208)
+  { type: 8, name: 'HealthService.initialize', commands: [
+    { subtype: 0, desc: 'CMD_SET_USER_INFO' },
+    { subtype: 8, desc: 'CMD_CONFIG_SPO2_GET' },
+    { subtype: 10, desc: 'CMD_CONFIG_HEART_RATE_GET' },
+    { subtype: 12, desc: 'CMD_CONFIG_STANDING_REMINDER_GET' },
+    { subtype: 14, desc: 'CMD_CONFIG_STRESS_GET' },
+    { subtype: 21, desc: 'CMD_CONFIG_GOAL_NOTIFICATION_GET' },
+    { subtype: 42, desc: 'CMD_CONFIG_GOALS_GET' },
+    { subtype: 35, desc: 'CMD_CONFIG_VITALITY_SCORE_GET' },
   ]},
-  // XiaomiNotificationService (type=7): screenOn + cannedMessages (NotificationService.java:94-99)
-  { type: 7, name: 'notification', commands: [
-    { subtype: 0, task: 'get screen on on notifications' },
+  // XiaomiNotificationService (COMMAND_TYPE=7): screenOn + canned messages (NotificationService.java:94-99)
+  { type: 7, name: 'NotificationService.initialize', commands: [
+    { subtype: 0, desc: 'CMD_SCREEN_ON_ON_NOTIFICATIONS_GET' },
   ]},
-  // XiaomiScheduleService (type=17): requestAlarms + requestReminders + requestWorldClocks
-  { type: 17, name: 'schedule', commands: [
-    { subtype: 0, task: 'get alarms' },
-    { subtype: 1, task: 'get reminders' },
-    { subtype: 3, task: 'get world clocks' },
+  // XiaomiScheduleService (COMMAND_TYPE=17): alarms+reminders+worldClocks (ScheduleService.java:147-156)
+  { type: 17, name: 'ScheduleService.initialize', commands: [
+    { subtype: 61, desc: 'CMD_ALARM_GET' },
+    { subtype: 64, desc: 'CMD_REMINDER_GET' },
+    { subtype: 68, desc: 'CMD_WORLD_CLOCK_GET' },
   ]},
-  // XiaomiWeatherService (type=10): setMeasurementSystem + getLocations (WeatherService.java:77-80)
-  { type: 10, name: 'weather', commands: [
-    { subtype: 0, task: 'get weather locations' },
+  // XiaomiWeatherService (COMMAND_TYPE=10): setMeasurementSystem + getLocations (WeatherService.java:77-80)
+  { type: 10, name: 'WeatherService.initialize', commands: [
+    { subtype: 0, desc: 'CMD_GET_LOCATIONS' },
   ]},
-  // XiaomiSystemService (type=2): 9 komut (SystemService.java:123-143)
-  { type: 2, name: 'system', commands: [
-    { subtype: 2, task: 'get device info' },
-    { subtype: 78, task: 'get device status' },
-    { subtype: 1, task: 'get battery state' },
-    { subtype: 9, task: 'get password' },
-    { subtype: 29, task: 'get display items' },
-    { subtype: 7, task: 'get camera remote' },
-    { subtype: 51, task: 'get widgets' },
-    { subtype: 53, task: 'get widget parts' },
-    { subtype: 39, task: 'get workout types' },
+  // XiaomiSystemService (COMMAND_TYPE=2): 9 GET (SystemService.java:123-143)
+  { type: 2, name: 'SystemService.initialize', commands: [
+    { subtype: 2, desc: 'CMD_DEVICE_INFO' },
+    { subtype: 78, desc: 'CMD_DEVICE_STATE_GET' },
+    { subtype: 1, desc: 'CMD_BATTERY' },
+    { subtype: 9, desc: 'CMD_PASSWORD_GET' },
+    { subtype: 29, desc: 'CMD_DISPLAY_ITEMS_GET' },
+    { subtype: 7, desc: 'CMD_CAMERA_REMOTE_GET' },
+    { subtype: 51, desc: 'CMD_WIDGET_SCREENS_GET' },
+    { subtype: 53, desc: 'CMD_WIDGET_PARTS_GET' },
+    { subtype: 39, desc: 'CMD_WORKOUT_TYPES_GET' },
   ]},
-  // XiaomiCalendarService (type=12): syncCalendar (CalendarService.java:59-61)
-  { type: 12, name: 'calendar', commands: [
-    { subtype: 0, task: 'sync calendar' },
+  // XiaomiCalendarService (COMMAND_TYPE=12): syncCalendar (CalendarService.java:59-61)
+  { type: 12, name: 'CalendarService.initialize', commands: [
+    { subtype: 0, desc: 'CMD_SYNC_CALENDAR' },
   ]},
-  // XiaomiWatchfaceService (type=4): initialize() bos (sadece state reset)
-  { type: 4, name: 'watchface', commands: [] },
-  // XiaomiDataUploadService (type=22): initialize() bos
-  { type: 22, name: 'dataUpload', commands: [] },
-  // XiaomiPhonebookService (type=21): initialize() bos
-  { type: 21, name: 'phonebook', commands: [] },
-  // XiaomiRpkService (type=20): initialize() bos
-  { type: 20, name: 'rpk', commands: [] },
+  // XiaomiWatchfaceService (COMMAND_TYPE=4): initialize() BOS (state reset)
+  // XiaomiDataUploadService (COMMAND_TYPE=22): initialize() BOS
+  // XiaomiPhonebookService (COMMAND_TYPE=21): initialize() BOS
+  // XiaomiRpkService (COMMAND_TYPE=20): initialize() BOS
 ];
 
+// ── GBDeviceHandle: XiaomiSupport + XiaomiBleProtocolV2 + BtLEQueue state ──
 export class GBDeviceHandle {
+  // BtLEQueue (BtLEQueue.java:73-101)
   device: BluetoothDevice | null = null;
   gattServer: BluetoothRemoteGATTServer | null = null;
-  charRead: BluetoothRemoteGATTCharacteristic | null = null;  // btCharacteristicRead (005E)
-  charWrite: BluetoothRemoteGATTCharacteristic | null = null;  // btCharacteristicWrite (005F)
-
-  // GB: BtLEQueue state
+  mBluetoothGatt: BluetoothRemoteGATTServer | null = null; // GB naming
+  btCharacteristicRead: BluetoothRemoteGATTCharacteristic | null = null;  // 005E
+  btCharacteristicWrite: BluetoothRemoteGATTCharacteristic | null = null; // 005F
   connected = false;
-  state = DEV_STATE.NOT_CONNECTED;  // GBDevice.State
+  state = State.NONE;
+  autoReconnect = true;     // GB: useAutoConnect() = true, setAutoReconnect(true)
 
-  // GB: XiaomiBleProtocolV2.packetSequenceCounter
-  sequenceCounter = 0;
+  // XiaomiBleProtocolV2 (BleProtocolV2.java:43-50)
+  packetSequenceCounter = 0;
+  maxWriteSize = 244;
+  buffer = new Uint8Array();       // ByteArrayOutputStream
 
-  // GB: ByteArrayOutputStream buffer (reassembly)
-  buffer = new Uint8Array();
-
-  // GB: XiaomiAuthService state
+  // XiaomiAuthService (AuthService.java:60-78)
   authProtocol: SppAuthProtocol | null = null;
   encryptionInitialized = false;
-  secretKey: Uint8Array | null = null;
-  nonce: Uint8Array | null = null;
+  secretKey = new Uint8Array(16);
+  nonce = new Uint8Array(16);
   decryptionKey = new Uint8Array(16);
   encryptionKey = new Uint8Array(16);
   decryptionNonce = new Uint8Array(4);
   encryptionNonce = new Uint8Array(4);
 
-  // GB: internal notification queue
-  notificationData: Uint8Array[] = [];
-  notificationResolve: ((data: Uint8Array) => void) | null = null;
-
-  // GB: sendCommand callback queue
-  commandResolve: ((data: Uint8Array | null) => void) | null = null;
-
-  // Max write chunk (GB: maxWriteSize = calcMaxWriteChunk(MTU))
-  maxWriteSize = 244;
+  // Notification queue (GB: onCharacteristicChanged -> buffer)
+  notifyQueue: Uint8Array[] = [];
+  notifyResolve: ((d: Uint8Array) => void) | null = null;
+  authResolve: ((d: Uint8Array | null) => void) | null = null;
 }
 
-// ── GB BtLEQueue.connect() (BtLEQueue.java:292-322) ──
-//   -> connectImp() (324-367) -> gatt.connect()
-export async function gbConnect(handle: GBDeviceHandle): Promise<void> {
-  log('info', `[GB] connect()`);
-  const device = handle.device;
-  if (!device || !device.gatt) throw new Error('GB: no device');
+// ═══════════════════════════════════════════════════════════════════
+// GB: BtLEQueue.connect() -> connectImp() -> gatt.connect()
+//   BtLEQueue.java:292-368
+// ═══════════════════════════════════════════════════════════════════
+async function gattConnect(handle: GBDeviceHandle): Promise<void> {
+  // GB: synchronized(mGattMonitor) (BtLEQueue.java:293)
+  if (handle.state >= State.INITIALIZING) {
+    log('warn', '[GB] connect ignored, state=' + handle.state);
+    return;
+  }
 
-  // GB: setDeviceConnectionState(CONNECTING)
-  handle.state = DEV_STATE.INITIALIZING;
+  // GB: connectImp() (324-367)
+  //   cancelDiscovery + getRemoteDevice + connectGatt
+  handle.gattServer = await handle.device!.gatt!.connect();
 
-  // GB: connectImp()
-  //   -> BluetoothDevice.connectGatt(context, false, callback)
-  handle.gattServer = await device.gatt.connect();
-  log('info', `[GB] Connected to ${device.name}`);
-
-  // GB: onConnectionStateChange -> STATE_CONNECTED
-  //   -> discoverServices -> onServicesDiscovered
+  // GB: onConnectionStateChange -> STATE_CONNECTED (BtLEQueue.java:638-661)
+  //   -> cached services check -> discoverServices
   handle.connected = true;
-  handle.state = DEV_STATE.INITIALIZING;
+  handle.state = State.CONNECTED;
 
-  // GB: discoverServices (automatic in Web Bluetooth via getPrimaryService)
+  // GB: gatt.getServices() -> cached? -> discoverServices
+  // Web Bluetooth: getPrimaryService otomatik service discovery yapar
   const service = await handle.gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
   const chars = await service.getCharacteristics();
-  handle.charRead = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
-  handle.charWrite = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
-  if (!handle.charRead || !handle.charWrite) throw new Error('005E/005F not found');
+  handle.btCharacteristicRead = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
+  handle.btCharacteristicWrite = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
+  if (!handle.btCharacteristicRead || !handle.btCharacteristicWrite) throw new Error('005E/005F not found');
 
-  log('info', `[GB] W=${handle.charWrite.uuid} N=${handle.charRead.uuid}`);
-
-  // GB: notify(btCharacteristicRead, true) -> startNotifications
-  await handle.charRead.startNotifications();
-  handle.charRead.addEventListener('characteristicvaluechanged', (ev: Event) => {
-    const target = ev.target as unknown as BluetoothRemoteGATTCharacteristic;
-    const value = new Uint8Array(target.value!.buffer);
-    gbOnCharacteristicChanged(handle, value);
-  });
-
-  // GB: onMtuChanged -> calcMaxWriteChunk(mtu) -> 244
-  // Web Bluetooth: varsayilan MTU 512+
-
-  log('info', `[GB] Services discovered, notifications enabled`);
+  log('info', `[GB] W=${handle.btCharacteristicWrite.uuid} N=${handle.btCharacteristicRead.uuid}`);
 }
 
-// ── GB onCharacteristicChanged (BleProtocolV2.java:110-127) ──
-function gbOnCharacteristicChanged(handle: GBDeviceHandle, value: Uint8Array) {
-  // GB: buffer.write(value)
+// ═══════════════════════════════════════════════════════════════════
+// GB: enable notification
+//   XiaomiBleProtocolV2.initializeDevice() -> builder.notify(char, true)
+// ═══════════════════════════════════════════════════════════════════
+async function enableNotifications(handle: GBDeviceHandle): Promise<void> {
+  handle.btCharacteristicRead!.addEventListener('characteristicvaluechanged', (ev: Event) => {
+    const target = ev.target as unknown as BluetoothRemoteGATTCharacteristic;
+    const value = new Uint8Array(target.value!.buffer);
+    gattOnCharacteristicChanged(handle, value);
+  });
+  await handle.btCharacteristicRead!.startNotifications();
+  log('info', '[GB] Notifications enabled');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GB: onCharacteristicChanged (BleProtocolV2.java:110-127)
+//   -> buffer.write(value) -> processBuffer()
+// ═══════════════════════════════════════════════════════════════════
+function gattOnCharacteristicChanged(handle: GBDeviceHandle, value: Uint8Array) {
+  // GB: buffer.write(value) (BleProtocolV2.java:117)
   const merged = new Uint8Array(handle.buffer.length + value.length);
   merged.set(handle.buffer);
   merged.set(value, handle.buffer.length);
   handle.buffer = merged;
 
-  // GB: processBuffer()
-  gbProcessBuffer(handle);
+  // GB: processBuffer() (144-175)
+  processBuffer(handle);
 
-  // Also push to notification queue for command waiters
-  if (handle.notificationResolve) {
-    handle.notificationResolve(value);
-    handle.notificationResolve = null;
+  // For async waiters
+  if (handle.notifyResolve) {
+    handle.notifyResolve(value);
+    handle.notifyResolve = null;
   } else {
-    handle.notificationData.push(value);
+    handle.notifyQueue.push(value);
   }
 }
 
-// ── GB processBuffer() (BleProtocolV2.java:144-175) ──
-function gbProcessBuffer(handle: GBDeviceHandle) {
+// ═══════════════════════════════════════════════════════════════════
+// GB: processBuffer (BleProtocolV2.java:144-175)
+//   while loop -> processPacket -> skip/preserve bytes
+// ═══════════════════════════════════════════════════════════════════
+function processBuffer(handle: GBDeviceHandle) {
   let shouldProcess = true;
   while (shouldProcess) {
     const buf = handle.buffer;
-    const result = gbProcessPacket(handle, buf);
+    // GB: processPacket returns ParseResult{status, packetSize} (279-339)
+    const result = processPacket(handle, buf);
     let skipBytes = 0;
 
     switch (result.status) {
-      case 'incomplete':
-        skipBytes = 0;
-        shouldProcess = false;
-        break;
-      case 'complete':
-        skipBytes = result.packetSize;
-        break;
+      case 'incomplete': skipBytes = 0; shouldProcess = false; break;
+      case 'complete': skipBytes = result.packetSize; break;
       case 'invalid':
-        skipBytes = gbFindNextPacketOffset(buf);
+        // GB: findNextPacketOffset -> sadece 0xA5 ara (270-277)
+        skipBytes = -1;
+        for (let i = 1; i < buf.length; i++) { if (buf[i] === 0xa5) { skipBytes = i; break; } }
         if (skipBytes < 0) skipBytes = buf.length;
         break;
     }
 
     if (skipBytes > 0) {
-      if (skipBytes >= buf.length) {
-        handle.buffer = new Uint8Array();
-      } else {
-        handle.buffer = buf.slice(skipBytes);
-      }
+      if (skipBytes >= buf.length) { handle.buffer = new Uint8Array(); }
+      else { handle.buffer = buf.slice(skipBytes); }
     }
   }
 }
 
-// ── GB findNextPacketOffset (BleProtocolV2.java:270-277) ──
-function gbFindNextPacketOffset(buffer: Uint8Array): number {
-  // GB: sadece 0xA5 ara (ilk preamble byte)
-  for (let i = 1; i < buffer.length; i++) {
-    if (buffer[i] === 0xa5) return i;
-  }
-  return -1;
-}
+// ═══════════════════════════════════════════════════════════════════
+// GB: processPacket (BleProtocolV2.java:279-339)
+//   XiaomiSppPacketV2.decode -> switch(packetType)
+//   SESSION_CONFIG -> startEncryptedHandshake
+//   DATA -> onPacketReceived -> sendAck
+// ═══════════════════════════════════════════════════════════════════
+function processPacket(handle: GBDeviceHandle, rxBuf: Uint8Array): { status: string; packetSize: number } {
+  // GB: min 8 byte (279-285)
+  if (rxBuf.length < 8) return { status: 'incomplete', packetSize: 0 };
 
-// ── GB processPacket (BleProtocolV2.java:279-339) ──
-function gbProcessPacket(handle: GBDeviceHandle, rxBuf: Uint8Array): { status: string; packetSize: number } {
-  if (rxBuf.length < 8) {
-    return { status: 'incomplete', packetSize: 0 };
-  }
+  // GB: preamble check (287-296)
+  if (rxBuf[0] !== 0xa5 || rxBuf[1] !== 0xa5) return { status: 'invalid', packetSize: 0 };
 
-  // Check preamble: 0xA5 0xA5
-  if (rxBuf[0] !== 0xa5 || rxBuf[1] !== 0xa5) {
-    return { status: 'invalid', packetSize: 0 };
-  }
-
-  // Read packetSize from header: 8 + payloadLength
-  const payloadLen = (rxBuf[5] << 8) | rxBuf[4]; // LE uint16
+  // GB: packetSize = 8 + payloadLength (298-301)
+  const payloadLen = rxBuf[4] | (rxBuf[5] << 8);
   const packetSize = 8 + payloadLen;
+  if (rxBuf.length < packetSize) return { status: 'incomplete', packetSize: 0 };
 
-  if (rxBuf.length < packetSize) {
-    return { status: 'incomplete', packetSize: 0 };
-  }
-
-  // GB: XiaomiSppPacketV2.decode(rxBuf)
+  // GB: XiaomiSppPacketV2.decode(rxBuf) (311)
   const decoded = SppPacketV2.decode(rxBuf.slice(0, packetSize));
-  if (!decoded) {
-    return { status: 'invalid', packetSize };
-  }
+  if (!decoded) return { status: 'invalid', packetSize };
 
-  // GB switch(decodedPacket.getPacketType())
+  // GB switch(decodedPacket.getPacketType()) (313-335)
   switch (decoded.packetType) {
     case SppPacketType.SESSION_CONFIG: {
-      // GB: log opcode, then startEncryptedHandshake() immediately
-      //   XiaomiBleProtocolV2.java:314-318
+      // GB: log opcode, startEncryptedHandshake() (314-318)
       log('info', `[GB] SessionConfig received, opcode=${decoded.configOpcode}`);
-      // GB: response icinde version bilgisi yok sayilir (TODO)
-      //   -> authService.startEncryptedHandshake()
-      gbStartEncryptedHandshake(handle);
+      startEncryptedHandshake(handle);
       break;
     }
     case SppPacketType.DATA: {
-      // GB: DataPacket.getPayloadBytes(authService) -> decrypt
-      //   XiaomiBleProtocolV2.java:319-327
-      const dataPacket = decoded;
-      const ch = SppChannel[dataPacket.channel ?? -1] ?? '?';
-      let payload = dataPacket.payload;
-      if (dataPacket.opcode === SppDataOpcode.SEND_ENCRYPTED && handle.encryptionInitialized) {
-        try {
-          payload = gbDecryptV2(handle, dataPacket.payload.slice(2));
-        } catch (e: any) {
-          log('warn', `[GB] Decrypt failed: ${e.message}`);
-        }
+      // GB: DataPacket -> onPacketReceived(channel, payload(authService)) (319-327)
+      const ch = decoded.channel ?? SppChannel.UNKNOWN;
+      let plainPayload = decoded.payload;
+      // GB: getPayloadBytes -> decrypt if SEND_ENCRYPTED
+      if (decoded.opcode === SppDataOpcode.SEND_ENCRYPTED && handle.encryptionInitialized && handle.authProtocol) {
+        try { plainPayload = handle.authProtocol.decryptV2(decoded.payload.slice(2)); }
+        catch {} // decrypt fail -> raw kullan
       }
-      log('send', `[GB] DATA ch=${ch} len=${payload.length}`);
-      // GB: onPacketReceived(channel, payload) -> handler map
-      gbOnPacketReceived(handle, dataPacket.channel ?? SppChannel.UNKNOWN, payload);
-      // GB: sendAck(decodedPacket.getSequenceNumber())
-      //   XiaomiBleProtocolV2.java:261-268
-      //   AckPacket.Builder().setSequenceNumber(seq).build().encode(null)
-      void gbWriteRaw(handle, SppPacketV2.buildAck(dataPacket.sequenceNumber));
+      onPacketReceived(handle, ch, plainPayload);
+
+      // GB: sendAck(sequenceNumber) (261-268)
+      const ackPacket = SppPacketV2.buildAck(decoded.sequenceNumber);
+      writeRaw(handle, ackPacket);
       break;
     }
     case SppPacketType.ACK:
-      // GB: sadece debug log (BleProtocolV2.java:329-331)
       log('info', `[GB] ACK seq=${decoded.sequenceNumber}`);
       break;
   }
 
-  // GB ParseResult(Complete, packetSize)
   return { status: 'complete', packetSize };
 }
 
-// ── GB onPacketReceived (BleProtocolV2.java:177-184) ──
-function gbOnPacketReceived(handle: GBDeviceHandle, channel: SppChannel, payload: Uint8Array) {
+// ═══════════════════════════════════════════════════════════════════
+// GB: onPacketReceived (BleProtocolV2.java:177-184)
+//   mChannelHandlers.get(channel).handle(payload)
+//   ProtobufCommand -> handleCommandBytes -> auth service dispatch
+// ═══════════════════════════════════════════════════════════════════
+function onPacketReceived(handle: GBDeviceHandle, channel: SppChannel, payload: Uint8Array) {
   if (channel === SppChannel.PROTOBUF_COMMAND || channel === SppChannel.AUTHENTICATION) {
-    // ProtobufCommand -> handleCommandBytes -> XiaomiAuthService.handleCommand
-    //   XiaomiSupport.java:197-215
-    // Auth bilgisi commandResolve ile demo'ya iletilir
-    if (handle.commandResolve) {
-      handle.commandResolve(payload);
-      handle.commandResolve = null;
+    // Protobuf payload geldi -> authResolve'a ilet
+    if (handle.authResolve) {
+      handle.authResolve(payload);
+      handle.authResolve = null;
     }
   }
-  // Diger channel'lar: Version -> handleVersionPacket, Activity -> activityFetcher
-  // Simdilik yoksay
 }
 
-// ── GB sendAck (BleProtocolV2.java:261-268) ──
-//   writeChunks(builder, AckPacket.Builder().setSequenceNumber(seq).build().encode(null))
-
-// ── GB encodePacket (BleProtocolV2.java:341-349) ──
-function gbEncodePacket(handle: GBDeviceHandle, channel: SppChannel, payloadBytes: Uint8Array): Uint8Array {
-  // GB XiaomiSppPacketV2.newDataPacketBuilder()
-  //   .setChannel(channel)
-  //   .setSequenceNumber(packetSequenceCounter.getAndIncrement())
-  //   .setOpCode(getOpCodeForChannel(channel))
-  //   .setPayload(payloadBytes)
-  //   .encode(authService)
-  const seq = handle.sequenceCounter;
-  handle.sequenceCounter = (handle.sequenceCounter + 1) & 0xff;
-  const opcode = gbGetOpCodeForChannel(channel);
-  return SppPacketV2.buildDataPacket(channel, opcode, payloadBytes);
+// ═══════════════════════════════════════════════════════════════════
+// GB: XiaomiBleProtocolV2.encodePacket (BleProtocolV2.java:341-349)
+//   getAndIncrement + getOpCodeForChannel + encode(authService)
+// ═══════════════════════════════════════════════════════════════════
+function encodePacket(handle: GBDeviceHandle, channel: SppChannel, payload: Uint8Array): Uint8Array {
+  // GB: packetSequenceCounter.getAndIncrement() -> sequence, sonra artir
+  const seq = handle.packetSequenceCounter;
+  handle.packetSequenceCounter = (handle.packetSequenceCounter + 1) & 0xff;
+  // GB: getOpCodeForChannel
+  const opcode = (channel === SppChannel.PROTOBUF_COMMAND || channel === SppChannel.ACTIVITY)
+    ? SppDataOpcode.SEND_ENCRYPTED : SppDataOpcode.SEND_PLAINTEXT;
+  return SppPacketV2.buildDataPacket(channel, opcode, payload);
 }
 
-// ── GB getOpCodeForChannel (SppPacketV2.java:336-348) ──
-function gbGetOpCodeForChannel(channel: SppChannel): SppDataOpcode {
-  switch (channel) {
-    case SppChannel.AUTHENTICATION: return SppDataOpcode.SEND_PLAINTEXT;
-    case SppChannel.PROTOBUF_COMMAND: return SppDataOpcode.SEND_ENCRYPTED;
-    default: return SppDataOpcode.SEND_PLAINTEXT;
-  }
-}
-
-// ── GB write (WriteAction.java + TransactionBuilder.writeChunkedData) ──
-//   GB: writeChunks(builder, value) -> builder.writeChunkedData(writeChar, value, maxWriteSize)
-//   -> WriteAction.run() -> writeCharacteristicImp()
-//   -> gatt.writeCharacteristic(characteristic, value, characteristic.getWriteType())
-//   -> waits for onCharacteristicWrite callback (expectsResult=true)
-//   -> latch.await()
-export async function gbWriteRaw(handle: GBDeviceHandle, data: Uint8Array): Promise<void> {
-  if (!handle.charWrite) throw new Error('GB: no btCharacteristicWrite');
-  // GB: chunking for large packets
+// ═══════════════════════════════════════════════════════════════════
+// GB: writeChunks -> WriteAction -> gatt.writeCharacteristic (WriteAction.java)
+//   characteristic.getWriteType() -> WRITE_TYPE_NO_RESPONSE (005F WW=true)
+// ═══════════════════════════════════════════════════════════════════
+async function writeRaw(handle: GBDeviceHandle, data: Uint8Array): Promise<void> {
+  if (!handle.btCharacteristicWrite) throw new Error('[GB] no btCharacteristicWrite');
   for (let offset = 0; offset < data.length; offset += handle.maxWriteSize) {
     const chunk = data.slice(offset, offset + handle.maxWriteSize);
     const ab = chunk.slice().buffer as ArrayBuffer;
-    // GB: characteristic.getWriteType() -> property'ye gore otomatik
-    if (handle.charWrite.properties.writeWithoutResponse) {
-      await handle.charWrite.writeValueWithoutResponse(ab);
-    } else {
-      await handle.charWrite.writeValue(ab);
-    }
+    // GB: characteristic.getWriteType() -> WRITE_TYPE_NO_RESPONSE
+    // Android: writeCharacteristic(char, value, char.getWriteType())
+    // Web Bluetooth: writeValueWithoutResponse (005F'de WW=true, W=false)
+    await handle.btCharacteristicWrite.writeValueWithoutResponse(ab);
   }
 }
 
-// ── GB writeChunks (BleProtocolV2.java:351-353) → writeChunkedData → WriteAction ──
-async function gbWriteChunks(handle: GBDeviceHandle, data: Uint8Array): Promise<void> {
-  // GB: builder.writeChunkedData(btCharacteristicWrite, value, maxWriteSize)
-  //   -> her chunk icin ayri WriteAction -> latch.await
-  // Web Bluetooth: direkt yaz, chunk gerekirse parcala
-  const chunkSize = Math.min(handle.maxWriteSize, 512);
-  for (let offset = 0; offset < data.length; offset += chunkSize) {
-    const chunk = data.slice(offset, offset + chunkSize);
-    await gbWriteRaw(handle, chunk);
-  }
-}
-
-// ── GB XiaomiAuthService.startEncryptedHandshake() ──
-//   XiaomiAuthService.java:88-95
-function gbStartEncryptedHandshake(handle: GBDeviceHandle) {
-  log('info', `[GB] startEncryptedHandshake`);
-
-  // GB: encryptionInitialized = false
-  handle.encryptionInitialized = false;
-
-  // GB: secretKey = getSecretKey(device)
-  const ltkStr = localStorage.getItem('be_ltk')!;
-  handle.secretKey = new Uint8Array(16);
-  for (let i = 0; i < 16; i++) handle.secretKey[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
-
-  // GB: nonce = SecureRandom.nextBytes(16)
-  handle.nonce = crypto.getRandomValues(new Uint8Array(16));
-
-  // GB: auth step 1 -> buildNonceCommand(nonce)
-  //   XiaomiAuthService.java:244-256
-  const authProt = new SppAuthProtocol(handle.secretKey);
-  handle.authProtocol = authProt;
-  const { nonce: pNonce, packet: pnPacket } = authProt.buildPhoneNonce();
-  handle.nonce = pNonce;
-
-  // GB: sendCommand("auth step 1", command)
-  //   type=1, subtype=26, auth.phone_nonce
-  //   -> encodePacket(Authentication, command.toByteArray())
-  const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
-  log('info', `[GB] Auth step 1: PhoneNonce seq=${handle.sequenceCounter}`);
-  handle.sequenceCounter = (handle.sequenceCounter + 1) & 0xff;
-  void gbWriteRaw(handle, sppPn).then(() => {
-    // Wait for WatchNonce response
-    gbWaitForNotification(handle, 10000, 'WatchNonce').then(async (wnPayload) => {
-      if (!wnPayload) { log('error', '[GB] WatchNonce timeout'); return; }
-      log('recv', `[GB] WatchNonce: ${toHex(wnPayload)}`);
-
-      // GB: handleWatchNonce (XiaomiAuthService.java:199-242)
-      //   computeAuthStep3Hmac + key split + HMAC verify
-      const step3 = await authProt.processWatchNonce(wnPayload);
-      if (!step3) { log('error', '[GB] WatchNonce decode failed'); return; }
-
-      // GB: auth step 2 -> CMD_AUTH
-      const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
-      log('info', `[GB] Auth step 2: AuthStep3 seq=${handle.sequenceCounter}`);
-      handle.sequenceCounter = (handle.sequenceCounter + 1) & 0xff;
-      void gbWriteRaw(handle, sppA3).then(async () => {
-        const authPayload = await gbWaitForNotification(handle, 10000, 'AuthResult');
-        if (!authPayload) { log('error', '[GB] AuthResult timeout'); return; }
-
-        // GB: handleCommand -> CMD_AUTH -> encryptionInitialized = true
-        const result = authProt.processAuthResponse(authPayload);
-        if (result) {
-          handle.encryptionInitialized = true;
-          log('info', '🎉 [GB] AUTH SUCCESS!');
-
-          // GB: key split (XiaomiAuthService.java:200-206)
-          handle.decryptionKey.set(authProt.keys!.decKey);
-          handle.encryptionKey.set(authProt.keys!.encKey);
-          handle.decryptionNonce.set(authProt.keys!.decNonce);
-          handle.encryptionNonce.set(authProt.keys!.encNonce);
-
-          // GB: setUpdateState(INITIALIZED) + onAuthSuccess()
-          handle.state = DEV_STATE.INITIALIZED;
-          await gbOnAuthSuccess(handle);
-        } else {
-          log('error', '✗ [GB] AUTH FAILED');
-        }
-      });
-    });
-  });
-}
-
-// ── GB XiaomiAuthService.encryptV2 → ctrCrypt (AES/CTR/NoPadding, key-as-IV) ──
-function gbEncryptV2(handle: GBDeviceHandle, message: Uint8Array): Uint8Array {
-  // GB: encryptV2 -> ctrCrypt(ENCRYPT_MODE, encryptionKey, encryptionKey, message)
-  //   XiaomiAuthService.java:365-391
-  if (!handle.authProtocol) return message;
-  return handle.authProtocol.encryptV2(message);
-}
-
-function gbDecryptV2(handle: GBDeviceHandle, ciphertext: Uint8Array): Uint8Array {
-  // GB: decryptV2 -> ctrCrypt(DECRYPT_MODE, decryptionKey, decryptionKey, ciphertext)
-  if (!handle.authProtocol) return ciphertext;
-  return handle.authProtocol.decryptV2(ciphertext);
-}
-
-// ── GB sendCommand (BleProtocolV2.java:200-231) ──
-//   type==1 -> Authentication channel, PLAINTEXT
-//   type!=1 -> ProtobufCommand channel, ENCRYPTED
-async function gbSendCommand(handle: GBDeviceHandle, type: number, subtype: number, task: string): Promise<void> {
-  // GB: protobuf Command{type, subtype}
-  const cmdBytes = gbBuildCommandBytes(type, subtype);
+// ═══════════════════════════════════════════════════════════════════
+// GB: XiaomiBleProtocolV2.sendCommand (BleProtocolV2.java:200-231)
+//   type==1 -> Authentication (plaintext)
+//   type!=1 -> ProtobufCommand (encrypted via authService)
+//   XiaomiSupport.sendCommand(taskName, type, subtype) (Support.java:423-431)
+// ═══════════════════════════════════════════════════════════════════
+async function sendCommand(handle: GBDeviceHandle, type: number, subtype: number, desc: string): Promise<void> {
+  // GB: protobuf Command{type, subtype} (XiaomiSupport.java:424-429)
+  const cmdBytes = buildProtobufCommand(type, subtype);
 
   if (type === 1) {
-    // GB: encodePacket(Authentication, command.toByteArray())
-    //   Authentication -> getOpCodeForChannel -> SEND_PLAINTEXT
-    const spp = gbEncodePacket(handle, SppChannel.AUTHENTICATION, cmdBytes);
-    log('send', `[GB] ${task} (type=${type} sub=${subtype}) seq=${spp[3]}`);
-    await gbWriteChunks(handle, spp);
+    // GB: encodePacket(Authentication, payload) -> SEND_PLAINTEXT
+    const spp = encodePacket(handle, SppChannel.AUTHENTICATION, cmdBytes);
+    log('send', `[GB] ${desc} auth seq=${spp[3]}`);
+    await writeRaw(handle, spp);
   } else {
-    // GB: encodePacket(ProtobufCommand, command.toByteArray())
-    //   ProtobufCommand -> getOpCodeForChannel -> SEND_ENCRYPTED
-    const encrypted = gbEncryptV2(handle, cmdBytes);
-    const spp = gbEncodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
-    log('send', `[GB] ${task} (type=${type} sub=${subtype}) seq=${spp[3]}`);
-    await gbWriteChunks(handle, spp);
+    // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
+    //   DataPacket.getPacketPayloadBytes -> encryptV2(payload) (SppPacketV2.java:375)
+    const encrypted = handle.authProtocol!.encryptV2(cmdBytes);
+    const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
+    log('send', `[GB] ${desc} seq=${spp[3]}`);
+    await writeRaw(handle, spp);
   }
 }
 
-// ── GB sendCommand overload (XiaomiSupport.java:423-431) ──
-//   sendCommand(taskName, type, subtype) -> Command{type, subtype}
-async function gbSendCommandSimple(handle: GBDeviceHandle, type: number, subtype: number, task: string): Promise<void> {
-  await gbSendCommand(handle, type, subtype, task);
+// ── GB protobuf Command field encoder: {type=1, subtype=N} ──
+function buildProtobufCommand(type: number, subtype: number): Uint8Array {
+  // field 1 (varint): type
+  const t = new Uint8Array([0x08, ...encodeVarint(type)]);
+  // field 2 (varint): subtype
+  const s = new Uint8Array([0x10, ...encodeVarint(subtype)]);
+  const out = new Uint8Array(t.length + s.length);
+  out.set(t, 0); out.set(s, t.length);
+  return out;
 }
-
-// ── GB: protobuf Command{type, subtype} encoder ──
-function gbBuildCommandBytes(type: number, subtype: number): Uint8Array {
-  const typeField = gbVarint((1 << 3) | 0); // field 1, wire type 0 -> 0x08
-  const typeVal = gbVarint(type);
-  const subField = gbVarint((2 << 3) | 0); // field 2, wire type 0 -> 0x10
-  const subVal = gbVarint(subtype);
-  return new Uint8Array([...typeField, ...typeVal, ...subField, ...subVal]);
-}
-
-function gbVarint(val: number): Uint8Array {
+function encodeVarint(val: number): Uint8Array {
   if (val < 0x80) return new Uint8Array([val]);
-  const bytes: number[] = [];
-  while (val >= 0x80) { bytes.push((val & 0x7f) | 0x80); val >>>= 7; }
-  bytes.push(val & 0x7f);
-  return new Uint8Array(bytes);
+  const b: number[] = [];
+  while (val >= 0x80) { b.push((val & 0x7f) | 0x80); val >>>= 7; }
+  b.push(val & 0x7f);
+  return new Uint8Array(b);
 }
 
-// ── GB XiaomiSupport.onAuthSuccess() (XiaomiSupport.java:405-417) ──
-//   1. connectionSupport.onAuthSuccess() (XiaomiBleSupport -> bleProtocol.onAuthSuccess = no-op V2)
-//   2. syncTime() -> systemService.setCurrentTime()
-//   3. for each service in mServiceMap: service.initialize()
-async function gbOnAuthSuccess(handle: GBDeviceHandle) {
-  log('info', `[GB] onAuthSuccess -> sync time + service init`);
-
-  // 2. Clock (systemService.setCurrentTime) -> type=2, subtype=3
-  //   XiaomiSystemService.java:316-353
-  const clockProto = encodeCommandClock();
-  const encClock = gbEncryptV2(handle, clockProto);
-  const sppClock = gbEncodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
-  log('send', `[GB] Clock seq=${sppClock[3]}`);
-  await gbWriteChunks(handle, sppClock);
-
-  // 3. Her service.initialize() sirasiyla
-  for (const svc of SERVICE_INIT_ORDER) {
-    if (svc.name === 'auth' || svc.name === 'music') continue; // bos initialize
-    for (const cmd of svc.commands) {
-      await gbSendCommandSimple(handle, svc.type, cmd.subtype, cmd.task);
-    }
-  }
-
-  log('info', `[GB] ALL SERVICES INITIALIZED`);
-}
-
-// ── GB wait for notification (notification bekleyenler icin) ──
-async function gbWaitForNotification(handle: GBDeviceHandle, timeoutMs: number, label: string): Promise<Uint8Array | null> {
+// ═══════════════════════════════════════════════════════════════════
+// GB: wait for notification (async notification bekleyenler icin)
+// ═══════════════════════════════════════════════════════════════════
+async function waitForNotification(handle: GBDeviceHandle, timeoutMs: number, label: string): Promise<Uint8Array | null> {
   return new Promise((resolve) => {
-    if (handle.notificationData.length > 0) {
-      resolve(handle.notificationData.shift()!);
-      return;
-    }
+    if (handle.notifyQueue.length > 0) { resolve(handle.notifyQueue.shift()!); return; }
     const t = setTimeout(() => {
-      if (handle.notificationResolve === resolve) handle.notificationResolve = null;
+      if (handle.notifyResolve === resolve) handle.notifyResolve = null;
       log('warn', `⏱ [GB] ${label} timeout ${timeoutMs}ms`);
       resolve(null);
     }, timeoutMs);
-    handle.notificationResolve = (v) => { clearTimeout(t); resolve(v); };
+    handle.notifyResolve = (v) => { clearTimeout(t); resolve(v); };
   });
 }
 
-// ── GB handleDisconnected + autoReconnect (BtLEQueue.java:402-486) ──
-//   handleDisconnected(status):
-//     normal status (!=0x81/0x85/0x08/0x93) && autoReconnect=true && bluetoothGatt != null
-//       -> gatt.connect() -> reconnect
-//     autoReconnect=false veya hata -> forceDisconnect
-async function gbHandleDisconnected(handle: GBDeviceHandle): Promise<boolean> {
-  log('warn', `[GB] handleDisconnected - attempting autoReconnect`);
-  try {
-    if (!handle.device?.gatt) return false;
-    // GB: if (btGatt != null && getAutoReconnect()) -> gatt.connect()
-    //   mBluetoothGatt.connect() -> onConnectionStateChange
-    handle.gattServer = await handle.device.gatt.connect();
-    log('info', `[GB] AutoReconnect OK`);
+// ── send + wait for auth response (sendAndWaitAuth pattern) ──
+async function sendAndWaitAuth(handle: GBDeviceHandle, data: Uint8Array, timeoutMs: number, label: string): Promise<Uint8Array | null> {
+  return new Promise((resolve) => {
+    if (handle.authResolve) handle.authResolve(null);
+    const t = setTimeout(() => {
+      if (handle.authResolve === resolve) handle.authResolve = null;
+      log('warn', `⏱ [GB] ${label} timeout ${timeoutMs}ms`);
+      resolve(null);
+    }, timeoutMs);
+    handle.authResolve = (p) => { clearTimeout(t); handle.authResolve = null; resolve(p); };
+    writeRaw(handle, data).catch((e) => { clearTimeout(t); handle.authResolve = null; log('error', `${label} write: ${e.message}`); resolve(null); });
+  });
+}
 
-    // GB: reconnect sonrasi service discovery gerekmez (cache)
-    //     notification'lar otomatik kalir (Android'de)
-    // Web Bluetooth'da yeniden enable gerekebilir
-    if (handle.charRead) {
-      try { await handle.charRead.startNotifications(); } catch {}
+// ═══════════════════════════════════════════════════════════════════
+// GB: XiaomiAuthService.startEncryptedHandshake (AuthService.java:88-95)
+//   + handleCommand -> CMD_NONCE -> handleWatchNonce -> CMD_AUTH
+// ═══════════════════════════════════════════════════════════════════
+function startEncryptedHandshake(handle: GBDeviceHandle) {
+  log('info', '[GB] startEncryptedHandshake');
+
+  // GB: encryptionInitialized = false (AuthService.java:89)
+  handle.encryptionInitialized = false;
+
+  // GB: secretKey = getSecretKey(device) (AuthService.java:91)
+  const ltkStr = localStorage.getItem('be_ltk')!;
+  for (let i = 0; i < 16; i++) handle.secretKey[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+
+  // GB: nonce = new SecureRandom().nextBytes(16) (AuthService.java:92)
+  const randomNonce = crypto.getRandomValues(new Uint8Array(16));
+  handle.nonce = randomNonce;
+
+  // GB: getSupport().sendCommand("auth step 1", buildNonceCommand(nonce)) (AuthService.java:94)
+  //   buildNonceCommand (AuthService.java:244-256)
+  //   -> Command{type=1, subtype=26, auth.phone_nonce{nonce}}
+  handle.authProtocol = new SppAuthProtocol(handle.secretKey);
+  const { nonce: pn, packet: pnPacket } = handle.authProtocol.buildPhoneNonce();
+
+  // GB: XiaomiBleProtocolV2.sendCommand -> type==1 -> encodePacket(Authentication, ...)
+  //   sequence: 0 (getAndIncrement -> 0, counter 1)
+  const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
+  log('info', `[GB] Auth step 1: PhoneNonce seq=${handle.packetSequenceCounter}`);
+  handle.packetSequenceCounter = (handle.packetSequenceCounter + 1) & 0xff;
+
+  // GB: builder.queue() async -> callback queue'dan calisir
+  // Web Bluetooth: direkt send + wait
+  sendAndWaitAuth(handle, sppPn, 10000, 'WatchNonce').then(async (wnPayload) => {
+    if (!wnPayload) { log('error', '[GB] WatchNonce timeout'); return; }
+    log('recv', `[GB] WatchNonce: ${toHex(wnPayload)}`);
+
+    // GB: handleWatchNonce (AuthService.java:199-242)
+    //   computeAuthStep3Hmac + key split + HMAC verify
+    const step3 = await handle.authProtocol!.processWatchNonce(wnPayload);
+    if (!step3) { log('error', '[GB] WatchNonce decode failed'); return; }
+
+    // GB: key split (AuthService.java:200-206)
+    handle.decryptionKey.set(handle.authProtocol!.keys!.decKey);
+    handle.encryptionKey.set(handle.authProtocol!.keys!.encKey);
+    handle.decryptionNonce.set(handle.authProtocol!.keys!.decNonce);
+    handle.encryptionNonce.set(handle.authProtocol!.keys!.encNonce);
+
+    // GB: auth step 2 -> CMD_AUTH (AuthService.java:142)
+    const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
+    log('info', `[GB] Auth step 2: AuthStep3 seq=${handle.packetSequenceCounter}`);
+    handle.packetSequenceCounter = (handle.packetSequenceCounter + 1) & 0xff;
+
+    sendAndWaitAuth(handle, sppA3, 10000, 'AuthResult').then(async (authPayload) => {
+      if (!authPayload) { log('error', '[GB] AuthResult timeout'); return; }
+      log('recv', `[GB] AuthResult: ${toHex(authPayload)}`);
+
+      // GB: handleCommand -> CMD_AUTH (AuthService.java:146-166)
+      const result = handle.authProtocol!.processAuthResponse(authPayload);
+      if (result) {
+        // GB: encryptionInitialized = true (AuthService.java:149)
+        handle.encryptionInitialized = true;
+        // GB: INITIALIZED (AuthService.java:153) -> onAuthSuccess (155)
+        handle.state = State.INITIALIZED;
+        log('info', '🎉 [GB] AUTH SUCCESS!');
+
+        // GB: onAuthSuccess() (Support.java:405-417)
+        await onAuthSuccess(handle);
+      } else {
+        log('error', '✗ [GB] AUTH FAILED');
+      }
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GB: XiaomiSupport.onAuthSuccess (Support.java:405-417)
+//   1. connectionSupport.onAuthSuccess() -> no-op V2
+//   2. syncTime() -> systemService.setCurrentTime()
+//   3. for each service in mServiceMap: service.initialize()
+// ═══════════════════════════════════════════════════════════════════
+async function onAuthSuccess(handle: GBDeviceHandle) {
+  log('info', '[GB] onAuthSuccess');
+
+  // 2. systemService.setCurrentTime() (Support.java:410-412)
+  //   XiaomiSystemService.java:316-353 -> Command{type=2, subtype=3, system{clock{...}}}
+  const clockBuf = encodeCommandClock();
+  const encClock = handle.authProtocol!.encryptV2(clockBuf);
+  const sppClock = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
+  log('send', `[GB] Clock seq=${sppClock[3]}`);
+  await writeRaw(handle, sppClock);
+
+  // 3. mServiceMap.values().forEach(service.initialize()) (Support.java:414-416)
+  for (const svc of SERVICE_INIT) {
+    for (const cmd of svc.commands) {
+      await sendCommand(handle, svc.type, cmd.subtype, cmd.desc);
+      // GB: aralarda callback bekleme yok, TransactionBuilder queue'ya ekler
+      //     WriteAction sirasi latch ile yonetilir
+      // Web Bluetooth: writeWithoutResponse -> callback yok, dogrudan sirayla
     }
-    return true;
-  } catch (e: any) {
-    log('error', `[GB] AutoReconnect failed: ${e.message}`);
-    return false;
+  }
+
+  log('info', '[GB] INIT COMPLETE — all services initialized');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GB: BtLEQueue.handleDisconnected (BtLEQueue.java:402-486)
+//   Status koduna gore karar:
+//     0x81/0x85/0x08/0x93 -> forceDisconnect
+//     default + autoReconnect -> gatt.connect() ile hemen reconnect
+// ═══════════════════════════════════════════════════════════════════
+async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
+  log('warn', '[GB] handleDisconnected');
+
+  // GB: mTransactions.clear(), mAbortTransaction=true (BtLEQueue.java:405-407)
+  // GB: pending latch'lari countDown (410-417)
+
+  // GB: autoReconnect (447-464, 471-485)
+  if (handle.state === State.INITIALIZED && handle.autoReconnect) {
+    if (handle.gattServer) {
+      // GB: mBluetoothGatt.connect() (456) -> STATE_CONNECTING
+      log('info', '[GB] autoReconnect: gatt.connect()');
+      try {
+        await handle.gattServer.connect();
+        // GB: onConnectionStateChange -> STATE_CONNECTED -> reconnect basarili
+        log('info', '[GB] autoReconnect OK');
+        handle.state = State.INITIALIZED;
+        // Notification'lari yeniden enable (Web Bluetooth gereksinimi)
+        if (handle.btCharacteristicRead) {
+          try { await handle.btCharacteristicRead.startNotifications(); } catch {}
+        }
+      } catch (e: any) {
+        log('error', `[GB] autoReconnect failed: ${e.message}`);
+        // GB: forceDisconnect (459)
+        try { handle.gattServer?.disconnect(); } catch {}
+        handle.state = State.NOT_CONNECTED;
+      }
+    } else {
+      // GB: WAITING_FOR_RECONNECT (479-480)
+      log('info', '[GB] autoReconnect: delayed (gatt null)');
+      handle.state = State.WAITING_FOR_RECONNECT;
+    }
+  } else {
+    handle.state = State.NOT_CONNECTED;
   }
 }
 
-// ── FULL GB FLOW: dispatcher ──
-export async function gbFullFlow(handle: GBDeviceHandle, onStatus: (s: string, ok?: boolean) => void): Promise<void> {
+// ═══════════════════════════════════════════════════════════════════
+// DISPATCHER: main.ts'den cagrilacak fonksiyon
+//   Disconnect oldugunda autoReconnect ile ayakta kalir
+// ═══════════════════════════════════════════════════════════════════
+export async function gbFullFlow(handle: GBDeviceHandle, device: BluetoothDevice,
+                                  onStatus: (s: string, ok?: boolean) => void,
+                                  onAuthSuccessCb?: () => void): Promise<void> {
   try {
-    onStatus('Pairing…');
-    log('info', '═══ GB MOD: FULL FLOW ═══');
-
-    // 1. Request device
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
-      optionalServices: [],
-    });
     handle.device = device;
+    handle.state = State.NONE;
+    handle.autoReconnect = true;
 
-    // 2. AutoReconnect: disconnect event listener (GB: handleDisconnected)
+    // GB: disconnect event -> handleDisconnected
     device.addEventListener('gattserverdisconnected', async () => {
-      log('warn', `[GB] gattserverdisconnected`);
-      if (handle.encryptionInitialized) {
-        const ok = await gbHandleDisconnected(handle);
-        if (ok) {
-          log('info', `[GB] Reconnected, state preserved`);
-        } else {
-          onStatus('Disconnected!', false);
-        }
-      }
+      log('warn', `[GB] DISCONNECT event` + (handle.encryptionInitialized ? ' (auth complete, reconnecting...)' : ''));
+      await handleDisconnected(handle);
     });
 
-    // 3. GB: connect() -> connectImp() -> gatt.connect()
-    await gbConnect(handle);
+    // GB: connect() via BtLEQueue
+    await gattConnect(handle);
+    onStatus('Connected');
+
+    // GB: initializeDevice -> notify(true) + SessionConfig (BleProtocolV2.java:63-96)
+    handle.packetSequenceCounter = 0;  // reset()
+    await enableNotifications(handle);
     onStatus('Session Config…');
 
-    // GB: initializeDevice() SessionConfig gonderimi:
-    //   XiaomiBleProtocolV2.java:86-93
-    //   setSequenceNumber(0) -> hardcoded, counter degismez
+    // GB: SessionConfig seq=0 hardcoded, counter artmaz (BleProtocolV2.java:86-93)
     const scPacket = SppPacketV2.buildSessionConfigRequest();
-    log('info', `[GB] SessionConfig seq=0`);
-    await gbWriteRaw(handle, scPacket);
+    log('info', '[GB] SessionConfig seq=0 (hardcoded, counter unchanged)');
+    await writeRaw(handle, scPacket);
 
-    // GB: band SessionConfig response'u donene kadar bekle
-    //   processPacket -> startEncryptedHandshake callback
-    //   Bu async olarak devam eder (startEncryptedHandshake -> auth process flow)
-    //   Auth suresi boyunca bekle
-    await new Promise(r => setTimeout(r, 2000));
+    // GB: band SessionConfig response'u beklenir
+    //   processPacket -> SessionConfig -> startEncryptedHandshake
+    //   auth baslayinca PhoneNonce -> WatchNonce -> AuthStep3
+    //   Auth suresi: ~2-3 saniye
+    await new Promise(r => setTimeout(r, 3000));
+    // Notification'lari bosalt
+    for (let i = 0; i < 10; i++) {
+      try {
+        const n = await waitForNotification(handle, 1000, `drain-${i}`);
+        if (!n) break;
+      } catch { break; }
+    }
 
-    // Auth sonrasi monitor
-    log('info', `[GB] Monitoring (autoReconnect active)`);
-    for (let i = 0; i < 30; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const connected = handle.gattServer?.connected ?? false;
-      log('info', `  [${i + 1}s] connected=${connected} state=${handle.state} enc=${handle.encryptionInitialized}`);
-      if (!connected && handle.encryptionInitialized) {
-        log('warn', `[GB] Disconnect at ${i + 1}s, autoReconnecting...`);
-        const reconnected = await gbHandleDisconnected(handle);
-        if (reconnected) continue;
-        else { log('error', `[GB] Lost connection`); break; }
+    if (!handle.encryptionInitialized) {
+      // Auth hala baslamadiysa notification bekle
+      log('warn', '[GB] Auth not completed yet');
+      for (let i = 0; i < 10; i++) {
+        await new Promise(r => setTimeout(r, 500));
+        if (handle.encryptionInitialized) break;
       }
     }
 
-    log('info', `═══ GB MOD: FLOW END ═══`);
+    if (!handle.encryptionInitialized) {
+      log('error', '[GB] Auth failed to complete');
+      return;
+    }
+
+    log('info', '[GB] Fully initialized. AutoReconnect active.');
+
+    // Monitor
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const connected = handle.gattServer?.connected ?? false;
+      log('info', `  [${i + 1}s] connected=${connected} state=${handle.state} enc=${handle.encryptionInitialized}`);
+      if (!connected && handle.state === State.NOT_CONNECTED) {
+        log('error', `[GB] Connection lost at ${i + 1}s`);
+        break;
+      }
+    }
+
+    log('info', '[GB] FLOW END');
   } catch (e: any) {
     log('error', `[GB] FATAL: ${e?.message ?? e}`);
     onStatus('Error', false);

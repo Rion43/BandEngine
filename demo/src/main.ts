@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.9.2-char-dump';
+const VERSION = '5.9.3-char-fix';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -240,8 +240,8 @@ async function startConnect() {
     for (const c of chars) {
       log('info', `  ${c.uuid} props: R=${c.properties.read} W=${c.properties.write} WW=${c.properties.writeWithoutResponse} N=${c.properties.notify}`);
     }
-    const char5e = chars.find(c => c.uuid.includes('005e'));
-    const char5f = chars.find(c => c.uuid.includes('005f'));
+    const char5e = chars.find(c => c.uuid.toLowerCase().includes('005e'));
+    const char5f = chars.find(c => c.uuid.toLowerCase().includes('005f'));
     if (!char5e || !char5f) throw new Error('005E/005F not found');
 
     writeChar = char5f;

@@ -252,7 +252,10 @@ async function startConnect() {
     // ═══ 1. SESSION CONFIG ═══
     log('info', '═══ 1. SESSION CONFIG ═══');
     SppPacketV2.resetSequence();
-    await writeBLE(SppPacketV2.buildSessionConfigRequest());
+    const scPacket = SppPacketV2.buildSessionConfigRequest();
+    log('info', `SessionConfig seq: ${scPacket[3]}, Internal counter after: 1`);
+    log('sent', `SessionConfig SPPv2 (${scPacket.length}B): ${hexLog(scPacket)}`);
+    await writeBLE(scPacket);
     setStatus('Waiting for Session Config…');
     await drainNotifications(15000);
     await new Promise(r => setTimeout(r, 500));
@@ -271,6 +274,7 @@ async function startConnect() {
 
     // Wrap in SPPv2 DATA(AUTHENTICATION, PLAINTEXT)
     const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
+    log('info', `PhoneNonce seq: ${sppPn[3]}, Internal counter after: 2`);
     log('sent', `PhoneNonce DATA (${sppPn.length}B): ${hexLog(sppPn)}`);
     const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'WatchNonce');
     if (!wnPayload) {

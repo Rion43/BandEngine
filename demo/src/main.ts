@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.9.3-char-fix';
+const VERSION = '6.0-idle-monitor';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -231,6 +231,16 @@ async function startConnect() {
       }), 30000, 'requestDevice');
     log('info', `Device: ${device.name ?? '?'}`);
     if (!device.gatt) throw new Error('gatt null');
+
+    // ── DISCONNECT EVENT LISTENER ──
+    device.addEventListener('gattserverdisconnected', (ev) => {
+      log('warn', `❗ DISCONNECT: gattserverdisconnected event`);
+      log('warn', `❗ Device: ${device.name}`);
+      setStatus('Disconnected!', false);
+      setButtons(false);
+    });
+    log('info', '→ gattserverdisconnected listener registered');
+
     gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
     log('info', 'GATT connected');
 
@@ -312,7 +322,20 @@ async function startConnect() {
       log('info', '🎉  AUTH SUCCESS!');
       setStatus('✓ Authenticated', true);
       setButtons(true);
-      log('info', '═══ CONNECTED — band bağlantıda ═══');
+
+      // ═══ IDLE MONITOR: 30 saniye bağlantıyı izle ═══
+      log('info', '═══ IDLE: 30s connection monitor ═══');
+      log('info', 'No packets will be sent. Just watching BLE connection.');
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const stillConnected = gattServer?.connected ?? false;
+        log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
+        if (!stillConnected) {
+          log('error', `❌ Connection LOST at ${i + 1}s`);
+          break;
+        }
+      }
+      log('info', '═══ IDLE MONITOR DONE ═══');
     } else {
       log('error', '✗  AUTH FAILED');
       setStatus('✗ Auth failed', false);

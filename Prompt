@@ -1,157 +1,87 @@
-Artık yeni teori üretme.
+STOP.
 
-Yeni mimari yazma.
+Auth artık çalışıyor.
 
-Yeni auth sistemi yazma.
+Bunu değiştirme.
 
-Protobuf'a dokunma.
+Şimdi sadece bağlantının neden koptuğunu araştır.
 
-SPPv2'ye dokunma.
-
-Çünkü elimizdeki kanıtlar:
-
-✓ FE95 çalışıyor
-✓ Notify çalışıyor
-✓ Session Config çalışıyor
-✓ Version geliyor
-✓ SPPv2 byte-identical
-✓ PhoneNonce protobuf byte-identical
-✓ CRC aynı
-✓ Channel aynı
-✓ Opcode aynı
-
-Artık tek şüpheli:
-
-SEQUENCE NUMBER.
-
-══════════════════════════════════════
-
-Gadgetbridge kodunu tekrar incele.
-
-Sadece sequence yönetimine odaklan.
-
-Aşağıdakileri KODDAN doğrula.
+Yapılacaklar:
 
 1.
 
-SessionConfig oluşturulurken
+Tüm disconnect eventlerini logla.
 
-setSequenceNumber(0)
+Örneğin:
 
-counter'ı artırıyor mu?
+gattserverdisconnected
 
-Yoksa sadece packet.sequence=0 mı oluyor?
+device disconnected
 
-Kod satırlarını göster.
+characteristic invalid
 
-══════════════════════════════════════
+notification stopped
 
 2.
 
-İlk Authentication DATA packet'i
+Auth SUCCESS sonrasında
 
-(getAndIncrement)
+30 saniye boyunca hiçbir şey yapma.
 
-hangi değeri döndürüyor?
-
-Gerçek cevap:
-
-0 mı
-
-1 mi
-
-Kod satırıyla kanıtla.
-
-══════════════════════════════════════
+Sadece bağlantının açık kalıp kalmadığını izle.
 
 3.
 
-BandEngine'in mevcut davranışını çıkar.
+Gadgetbridge'i incele.
 
-SessionConfig sırasında
+Auth SUCCESS sonrasında ilk 10 saniyede
 
-counter kaç oluyor?
+hangi paketleri gönderiyor?
 
-PhoneNonce sırasında
+Heartbeat?
 
-kaç oluyor?
+Ping?
 
-Log üret.
+KeepAlive?
 
-══════════════════════════════════════
+Battery Request?
+
+Status Request?
+
+Bunları sırayla raporla.
 
 4.
 
-Eğer gerçekten fark varsa
+Eğer Gadgetbridge auth sonrası
 
-SADECE bunu değiştir.
+hemen bir komut gönderiyorsa
 
-Başka hiçbir dosyaya dokunma.
-
-Amaç:
-
-SessionConfig
-
-sequence = 0
-
-counter değişmeyecek.
-
-PhoneNonce
-
-ilk DATA sequence = 0
-
-olacak.
-
-══════════════════════════════════════
+BandEngine de aynı komutu göndersin.
 
 5.
 
-Build al.
+Asla disconnect çağırma.
 
-Log üret.
+Kodun hiçbir yerinde
 
-Şunları yaz:
+device.gatt.disconnect()
 
-SessionConfig seq
+BluetoothRemoteGATTServer.disconnect()
 
-Internal counter
-
-PhoneNonce seq
-
-Gönderilen tam SPPv2 HEX
-
-══════════════════════════════════════
+çağrılıyorsa logla.
 
 6.
 
-Test et.
+Bluefy'nin disconnect eventini de logla.
 
-WatchNonce geldi mi?
+İlk hedef:
 
-Eğer geldiyse
+AUTH SUCCESS sonrası
 
-HEMEN DUR.
+30 saniye boyunca
 
-Başka kod yazma.
+BLE bağlantısını açık tutmak.
 
-══════════════════════════════════════
+Hiçbir yeni özellik ekleme.
 
-Eğer GELMEDİYSE
-
-yeni teori üretme.
-
-Önce Gadgetbridge'in aynı anda gönderdiği bütün paketleri çıkar.
-
-SessionConfig'tan
-
-WatchNonce gelene kadar
-
-gönderilen ve alınan HER paketi sırayla listele.
-
-Hiçbir paketi atlama.
-
-Ama önce sadece sequence hipotezini test et.
-
-Bu commit yalnızca sequence davranışını değiştirecek.
-
-Başka hiçbir değişiklik yapılmayacak.
+Önce bağlantı kopmasının sebebini bul.

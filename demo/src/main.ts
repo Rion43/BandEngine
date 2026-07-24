@@ -319,25 +319,29 @@ async function runPostAuth(): Promise<void> {
     await writeBLE(spp);
     await monitorConnection(30);
   } else if (test === 12) {
-    // TEST 12: AES-CTR self-test — encrypt+decrypt consistency
+    // TEST 12: AES-CTR consistency — encrypt with encKey, decrypt with encKey (symmetric)
     log('info', '═══ AES-CTR SELF-TEST ═══');
+    const key = authProtocol!.keys!;
     const testData = new Uint8Array([0x08, 0x02, 0x10, 0x02, 0x08, 0x02, 0x10, 0x01, 0x08, 0x02, 0x10, 0x4e]);
-    const enc = await authProtocol!.encryptV2(testData);
-    const dec = await authProtocol!.decryptV2(enc);
+    // encrypt with encKey, then decrypt with encKey (CTR is symmetric, same key)
+    const { aesCtrEncrypt } = await import('../../src/SppAuthCrypto.js');
+    const enc = await aesCtrEncrypt(testData, key.encKey);
+    const dec = await aesCtrEncrypt(enc, key.encKey); // CTR: encrypt with same key = decrypt
     const match = dec.length === testData.length && dec.every((b, i) => b === testData[i]);
     log('info', `Plaintext:  ${toHex(testData)}`);
     log('info', `Encrypted:  ${toHex(enc)}`);
     log('info', `Decrypted:  ${toHex(dec)}`);
     log('info', `Match: ${match ? '✅ YES' : '❌ NO'}`);
-    if (!match) {
-      log('error', '❌ AES-CTR self-test FAILED! Web Crypto encrypt/decrypt not consistent!');
-    } else {
-      // Şimdi band'a boş bir encrypted DATA gönderelim (sadece channel+opcode, body yok)
+    if (match) {
+      log('info', '✅ AES-CTR self-test PASSED. Web Crypto consistent.');
+      // Şimdi band'a boş encrypted DATA gönder (encKey ile şifrele, band decKey ile decrypt eder)
       log('info', 'Sending empty encrypted DATA to band...');
       const emptyEnc = await authProtocol!.encryptV2(new Uint8Array(0));
       const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, emptyEnc);
-      log('sent', `Empty encrypted DATA (${spp.length}B): ${hexLog(spp)}`);
+      log('sent', `Empty enc DATA (${spp.length}B): ${hexLog(spp)}`);
       await writeBLE(spp);
+    } else {
+      log('error', '❌ AES-CTR self-test FAILED! Web Crypto bug!');
     }
     await monitorConnection(30);
   } else {

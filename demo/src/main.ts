@@ -8,7 +8,7 @@ import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystem
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod-v6';
+const VERSION = '6.0-gbmod-v7';
 
 const $ = (id: string) => document.getElementById(id)!;
 

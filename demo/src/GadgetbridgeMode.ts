@@ -501,6 +501,18 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
       try {
         await handle.device!.gatt!.connect();
         log('info', '[GB] autoReconnect OK - gatt connected');
+
+        // CRITICAL: Reconnect sonrası gattServer referansını GÜNCELLE
+        handle.gattServer = handle.device!.gatt!;
+
+        // GB: reconnect sonrası servisleri yeniden keşfet + karakteristikleri yeniden al
+        // GB: onServicesDiscovered -> cached services? -> initializeDevice
+        // Web Bluetooth'ta cached services genelde boş, discoverServices gerekir
+        try {
+          await gattConnect(handle);
+        } catch {
+          // servis bulunamadı, direkt karakteristikleri yeniden almayı dene
+        }
         handle.state = State.INITIALIZED;
         // Notification'lari yeniden enable (Web Bluetooth gereksinimi)
         if (handle.btCharacteristicRead) {

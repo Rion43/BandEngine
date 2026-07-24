@@ -5,7 +5,7 @@ import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 
-const VERSION = '5.9.1-clock-deviceinfo';
+const VERSION = '5.9.2-char-dump';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -236,6 +236,10 @@ async function startConnect() {
 
     const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
+    log('info', `FE95 characteristics (${chars.length}):`);
+    for (const c of chars) {
+      log('info', `  ${c.uuid} props: R=${c.properties.read} W=${c.properties.write} WW=${c.properties.writeWithoutResponse} N=${c.properties.notify}`);
+    }
     const char5e = chars.find(c => c.uuid.includes('005e'));
     const char5f = chars.find(c => c.uuid.includes('005f'));
     if (!char5e || !char5f) throw new Error('005E/005F not found');

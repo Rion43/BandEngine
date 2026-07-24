@@ -531,9 +531,6 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
       log('info', '[GB] autoReconnect: delayed (gatt null)');
       handle.state = State.WAITING_FOR_RECONNECT;
     }
-  } else {
-    handle.state = State.NOT_CONNECTED;
-  }
 }
 
 // ═══════════════════════════════════════════════════════════════════

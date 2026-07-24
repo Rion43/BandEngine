@@ -1,18 +1,17 @@
 AUTH SUCCESS!
-[19:27:31.214] ═══ POST-AUTH: CLOCK + DEVICE INFO (ENCRYPTED) ═══
-[19:27:31.215] Clock cmd: 08 02 10 03
-[19:27:31.218] Clock SPPv2 (14B): (14B) a5 a5 03 02 06 00 96 70 01 02 08 02 10 03
-[19:27:34.225] Clock resp (71B): (71B) a5 a5 03 00 3f 00 3e 1b 01 01 08 01 10 1a 1a 37 fa 01 34 0a 10 67 a9 9b 7c 35 6f a9 4c b9 dc 22 35 23 43 ad 66 12 20 e6 f4 c7 3a ee e1 05 a4 03 be f9 e9 65 2e 16 e5 dc 1c be 70 d6 a0 43 d4 d3 … (71 total)
-[19:27:34.229] SPP DATA seq=0 len=61
-[19:27:34.231] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(61B)
-[19:27:34.233] Clock resp (8B): (8B) a5 a5 01 01 00 00 00 00
-[19:27:34.234] SPP ACK seq=1 len=0
-[19:27:34.234] ACK seq=1
-[19:27:34.235] Clock resp (33B): (33B) a5 a5 03 01 19 00 03 26 01 01 08 01 10 1b 1a 11 8a 02 0e 08 01 10 bd fe bf 9f 01 18 a2 ea 8c 99 04
-[19:27:34.236] SPP DATA seq=1 len=23
-[19:27:34.237] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(23B)
-[19:27:37.241] ═══ DEVICE INFO (ENCRYPTED) ═══
-[19:27:37.243] DeviceInfo cmd: 08 02 10 02
-[19:27:37.245] DeviceInfo SPPv2 (14B): (14B) a5 a5 03 03 06 00 b2 4b 01 02 b5 ec 6e 04
-[19:27:37.254] Post-auth: 2
-[19:27:37.255] ═══ FULL AUTH FLOW DONE ═══
+[03:53:43.198] ═══ TEST 1: CMD_CLOCK only ═══
+[03:53:43.219] Clock protobuf (53B): 08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 18 12 09 08 03 10 35 18 2b 20 c7 01 1a 15 08 18 10 00 1a 0f 45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c 20 00
+[03:53:43.221] Clock encrypted (53B): 2e 88 f9 d1 3f 01 be 1a 30 64 d9 7d c0 8c 45 4e e1 64 97 aa 0d 57 dc d9 e9 a4 b4 4c 70 ac 26 19 3c 8d fb b1 8a df 7b c6 8e a7 de bb dc 44 63 02 19 f8 ea d4 ea
+[03:53:43.222] Clock SPPv2 (63B): (63B) a5 a5 03 02 37 00 67 e0 01 02 2e 88 f9 d1 3f 01 be 1a 30 64 d9 7d c0 8c 45 4e e1 64 97 aa 0d 57 dc d9 e9 a4 b4 4c 70 ac 26 19 3c 8d fb b1 8a df 7b c6 8e a7 de bb dc 44 63 02 19 f8 ea d4 ea
+[03:53:43.226] Clock sent. Starting 30s connection monitor...
+[03:53:43.268] ❗ DISCONNECT: gattserverdisconnected event
+[03:53:43.269] ❗ Device: Xiaomi Smart Band 9 0A4B
+[03:53:44.227] [1s] connected=false queue=3 sppBuf=0
+[03:53:44.231] ❌ Connection LOST at 1s
+[03:53:44.233] ═══ TEST 1 DONE ═══
+[03:53:44.234] ═══ FULL AUTH FLOW DONE ═══
+
+  Böyle dedide bazı yazılar sarı renkli bişey ifade   
+  ediyormu bide elinde gadget bridge projesi var      
+  ondan re et ve şu bağlantı kopma sorununu çöz       
+  artıkkkkk

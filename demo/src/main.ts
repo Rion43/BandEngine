@@ -6,8 +6,9 @@ import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
 import { diagWriteDebug } from './BluefyDiagnostic.js';
+import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-asmctr';
+const VERSION = '6.0-gbmod';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -260,6 +261,7 @@ const TEST_NAMES: Record<number, string> = {
   11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
   12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
   13: 'TEST 13: Reconnect sonrasi Clock',
+  14: 'GADGETBRIDGE MOD: full GB flow (autoReconnect + init services)',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -376,12 +378,9 @@ async function runPostAuth(): Promise<void> {
         break;
       }
     }
-    // TEST 0: Normal — all 4 commands immediately
-    await sendEncrypted(encodeCommandClock(), 'Clock');
-    await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');
-    await sendEncrypted(getBatteryCmd(), 'Battery');
-    await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
-    await monitorConnection(30);
+  } else if (test === 14) {
+    const gbHandle = new GBDeviceHandle();
+    await gbFullFlow(gbHandle, setStatus);
   }
 
   log('info', `========== ${tname} END ==========`);

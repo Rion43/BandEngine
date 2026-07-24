@@ -6,7 +6,7 @@ import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
 
-const VERSION = '6.0-test3-protobufjs';
+const VERSION = '6.0-test4-4commands';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -324,33 +324,40 @@ async function startConnect() {
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
-      // Gadgetbridge birebir: once Clock, sonra DeviceInfo
-      log('info', '═══ POST-AUTH: CMD_CLOCK (protobufjs) ═══');
+      // Gadgetbridge birebir: Clock + DeviceInfo GET + Battery GET + DeviceState GET
+      // hemen pes pese, band 70ms icinde disconnect ediyor
+      log('info', '═══ POST-AUTH: 4 KOMUT ═══');
+      const now = Date.now();
+
+      // 1. Clock
       const clockBuf = encodeCommandClock();
-      log('info', `Clock protobuf (${clockBuf.length}B): ${toHex(clockBuf)}`);
       const encClock = await authProtocol!.encryptV2(clockBuf);
-      log('info', `Clock encrypted (${encClock.length}B): ${toHex(encClock)}`);
       const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
       log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
       await writeBLE(sppClock);
-      await new Promise(r => setTimeout(r, 100));
 
-      log('info', '--- CMD_DEVICE_INFO_GET ---');
+      // 2. DeviceInfo GET
       const diBuf = encodeCommandDeviceInfo();
-      log('info', `DeviceInfo protobuf (${diBuf.length}B): ${toHex(diBuf)}`);
       const encDi = await authProtocol!.encryptV2(diBuf);
-      log('info', `DeviceInfo encrypted (${encDi.length}B): ${toHex(encDi)}`);
       const sppDi = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encDi);
       log('sent', `DeviceInfo SPPv2 (${sppDi.length}B): ${hexLog(sppDi)}`);
       await writeBLE(sppDi);
-      log('info', `Encrypted (${enc.length}B): ${toHex(enc)}`);
 
-      // Gadgetbridge gibi: hemen gonder (band 70ms icinde disconnect ediyor)
+      // 3. Battery GET
+      const battBuf = new Uint8Array([0x08, 0x02, 0x10, 0x01]);
+      const encBatt = await authProtocol!.encryptV2(battBuf);
+      const sppBatt = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBatt);
+      log('sent', `Battery SPPv2 (${sppBatt.length}B): ${hexLog(sppBatt)}`);
+      await writeBLE(sppBatt);
 
-      const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-      log('sent', `SPPv2 (${spp.length}B): ${hexLog(spp)}`);
-      await writeBLE(spp);
-      log('info', 'Sent. Starting 30s connection monitor...');
+      // 4. DeviceState GET (subtype=78)
+      const stateBuf = new Uint8Array([0x08, 0x02, 0x10, 0x4e]);
+      const encState = await authProtocol!.encryptV2(stateBuf);
+      const sppState = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encState);
+      log('sent', `DeviceState SPPv2 (${sppState.length}B): ${hexLog(sppState)}`);
+      await writeBLE(sppState);
+
+      log('info', `All sent in ${Date.now() - now}ms. Starting 30s connection monitor...`);
 
       for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, 1000));

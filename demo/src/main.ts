@@ -399,8 +399,11 @@ async function startConnect() {
     const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
     const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
     log('info', `FE95 characteristics (${chars.length}):`);
-    for (const c of chars) {
-      log('info', `  ${c.uuid} props: R=${c.properties.read} W=${c.properties.write} WW=${c.properties.writeWithoutResponse} N=${c.properties.notify}`);
+    for (let i = 0; i < chars.length; i++) {
+      const c = chars[i];
+      if (!c) { log('warn', `  [${i}] undefined char`); continue; }
+      const p = c.properties;
+      log('info', `  ${c.uuid} props: R=${!!p.read} W=${!!p.write} WW=${!!p.writeWithoutResponse} N=${!!p.notify}`);
     }
     const char5e = chars.find(c => c.uuid.toLowerCase().includes('005e'));
     const char5f = chars.find(c => c.uuid.toLowerCase().includes('005f'));

@@ -87,6 +87,7 @@ export class GBDeviceHandle {
   state = State.NONE;
   autoReconnect = true;     // GB: useAutoConnect() = true, setAutoReconnect(true)
   fullyInitialized = false;  // PAIRING TAMAMLANDI - artık auto-reconnect güvenli
+  initCompleteTime = 0;      // INIT TAMAMLANMA ZAMANI - pairing koruması için
 
   // XiaomiBleProtocolV2 (BleProtocolV2.java:43-50)
   packetSequenceCounter = 0;
@@ -496,13 +497,20 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
   // GB: pending latch'lari countDown (410-417)
 
   // GB: autoReconnect (447-464, 471-485)
-  // Sadece FULL INIT TAMAMLANDIKTAN SONRA reconnect et (pairing bozulmasın)
+  // Sadece FULL INIT TAMAMLANDIKTAN 60sn SONRA reconnect et (pairing bozulmasın)
   if (handle.state === State.INITIALIZED && handle.autoReconnect && handle.fullyInitialized && handle.device?.gatt) {
-      // GB: mBluetoothGatt.connect() (456) -> STATE_CONNECTING
-      log('info', '[GB] autoReconnect: device.gatt.connect()');
-      try {
-        await handle.device!.gatt!.connect();
-        log('info', '[GB] autoReconnect OK - gatt connected');
+    const timeSinceInit = Date.now() - handle.initCompleteTime;
+    if (timeSinceInit < 60000) {
+      // İlk 60sn içinde reconnect ETME - pairing tamamlanıyor olabilir
+      log('info', `[GB] Disconnect ignored (within 60s of init): ${Date.now() - handle.initCompleteTime}ms since init`);
+      handle.state = State.NOT_CONNECTED;
+      return;
+    }
+
+    log('info', `[GB] autoReconnect: device.gatt.connect() (${Date.now() - handle.initCompleteTime}ms after init)`);
+    try {
+      await handle.device!.gatt!.connect();
+      log('info', `[GB] autoReconnect OK - gatt connected`);
 
         // CRITICAL: Reconnect sonrası gattServer referansını GÜNCELLE
         handle.gattServer = handle.device!.gatt!;

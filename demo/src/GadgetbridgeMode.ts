@@ -86,6 +86,7 @@ export class GBDeviceHandle {
   connected = false;
   state = State.NONE;
   autoReconnect = true;     // GB: useAutoConnect() = true, setAutoReconnect(true)
+  fullyInitialized = false;  // PAIRING TAMAMLANDI - artık auto-reconnect güvenli
 
   // XiaomiBleProtocolV2 (BleProtocolV2.java:43-50)
   packetSequenceCounter = 0;
@@ -479,6 +480,7 @@ async function onAuthSuccess(handle: GBDeviceHandle) {
   }
 
   log('info', '[GB] INIT COMPLETE — all services initialized');
+  handle.fullyInitialized = true;  // PAIRING TAMAMLANDI - artık auto-reconnect güvenli
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -494,8 +496,8 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
   // GB: pending latch'lari countDown (410-417)
 
   // GB: autoReconnect (447-464, 471-485)
-  if (handle.state === State.INITIALIZED && handle.autoReconnect) {
-    if (handle.encryptionInitialized && handle.autoReconnect && handle.device?.gatt) {
+  // Sadece FULL INIT TAMAMLANDIKTAN SONRA reconnect et (pairing bozulmasın)
+  if (handle.state === State.INITIALIZED && handle.autoReconnect && handle.fullyInitialized && handle.device?.gatt) {
       // GB: mBluetoothGatt.connect() (456) -> STATE_CONNECTING
       log('info', '[GB] autoReconnect: device.gatt.connect()');
       try {

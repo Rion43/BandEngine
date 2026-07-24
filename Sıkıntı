@@ -1,0 +1,118 @@
+═══ GB MOD START ═══
+[15:23:34.099] [GB] W=005F N=005E
+[15:23:34.109] [GB] Notifications enabled
+[15:23:34.113] [GB] SessionConfig seq=0 (hardcoded, counter unchanged)
+[15:23:34.399] [GB] SessionConfig received, opcode=2
+[15:23:34.401] [GB] startEncryptedHandshake
+[15:23:34.407] [GB] Auth step 1: PhoneNonce seq=0
+[15:23:34.455] [GB] ACK seq=0
+[15:23:34.459] [GB] WatchNonce: 08 01 10 1a 1a 37 fa 01 34 0a 10 7d cd d9 24 c3 64 f7 4b f8 c8 cc 48 f1 69 48 3b 12 20 32 b9 bc 34 fc 7b 19 84 c0 b7 5e 12 4d a9 ff 7e 38 81 98 3d 58 06 dd 24 76 4a 07 ba be 9a 92 ce
+[15:23:34.485] [GB] Auth step 2: AuthStep3 seq=1
+[15:23:34.546] [GB] ACK seq=1
+[15:23:34.548] [GB] AuthResult: 08 01 10 1b 1a 02 18 07
+[15:23:34.550] 🎉 [GB] AUTH SUCCESS!
+[15:23:34.552] [GB] onAuthSuccess
+[15:23:34.587] [GB] Clock seq=2
+[15:23:34.591] [GB] CMD_SET_USER_INFO seq=3
+[15:23:34.594] [GB] CMD_CONFIG_SPO2_GET seq=4
+[15:23:34.597] [GB] CMD_CONFIG_HEART_RATE_GET seq=5
+[15:23:34.598] [GB] CMD_CONFIG_STANDING_REMINDER_GET seq=6
+[15:23:34.600] [GB] CMD_CONFIG_STRESS_GET seq=7
+[15:23:34.601] [GB] CMD_CONFIG_GOAL_NOTIFICATION_GET seq=8
+[15:23:34.603] [GB] CMD_CONFIG_GOALS_GET seq=9
+[15:23:34.604] [GB] CMD_CONFIG_VITALITY_SCORE_GET seq=10
+[15:23:34.606] [GB] CMD_SCREEN_ON_ON_NOTIFICATIONS_GET seq=11
+[15:23:34.607] [GB] CMD_ALARM_GET seq=12
+[15:23:34.609] [GB] CMD_REMINDER_GET seq=13
+[15:23:34.611] [GB] CMD_WORLD_CLOCK_GET seq=14
+[15:23:34.613] [GB] CMD_GET_LOCATIONS seq=15
+[15:23:34.615] [GB] CMD_DEVICE_INFO seq=16
+[15:23:34.616] [GB] CMD_DEVICE_STATE_GET seq=17
+[15:23:34.617] [GB] CMD_BATTERY seq=18
+[15:23:34.618] [GB] CMD_PASSWORD_GET seq=19
+[15:23:34.619] [GB] CMD_DISPLAY_ITEMS_GET seq=20
+[15:23:34.621] [GB] CMD_CAMERA_REMOTE_GET seq=21
+[15:23:34.622] [GB] CMD_WIDGET_SCREENS_GET seq=22
+[15:23:34.623] [GB] CMD_WIDGET_PARTS_GET seq=23
+[15:23:34.625] [GB] CMD_WORKOUT_TYPES_GET seq=24
+[15:23:34.627] [GB] CMD_SYNC_CALENDAR seq=25
+[15:23:34.628] [GB] INIT COMPLETE — all services initialized
+[15:23:34.637] [GB] ACK seq=2
+[15:23:34.637] [GB] ACK seq=6
+[15:23:34.651] [GB] ACK seq=7
+[15:23:34.667] [GB] ACK seq=19
+[15:23:34.667] [GB] ACK seq=23
+[15:23:34.682] [GB] ACK seq=24
+[15:23:34.682] [GB] ACK seq=25
+[15:23:37.128] [GB] Fully initialized. AutoReconnect active.
+[15:23:38.131] [1s] connected=true state=3 enc=true
+[15:23:39.136] [2s] connected=true state=3 enc=true
+[15:23:40.140] [3s] connected=true state=3 enc=true
+[15:23:41.144] [4s] connected=true state=3 enc=true
+[15:23:42.149] [5s] connected=true state=3 enc=true
+[15:23:43.153] [6s] connected=true state=3 enc=true
+[15:23:44.156] [7s] connected=true state=3 enc=true
+[15:23:45.160] [8s] connected=true state=3 enc=true
+[15:23:46.163] [9s] connected=true state=3 enc=true
+[15:23:47.169] [10s] connected=true state=3 enc=true
+[15:23:47.484] [GB] DISCONNECT event (auth complete, reconnecting...)
+[15:23:47.485] [GB] handleDisconnected
+[15:23:47.486] [GB] autoReconnect: device.gatt.connect()
+[15:23:48.177] [11s] connected=false state=3 enc=true
+[15:23:49.182] [12s] connected=false state=3 enc=true
+[15:23:50.190] [13s] connected=false state=3 enc=true
+[15:23:51.198] [14s] connected=false state=3 enc=true
+[15:23:52.206] [15s] connected=false state=3 enc=true
+[15:23:53.213] [16s] connected=false state=3 enc=true
+[15:23:54.056] [GB] autoReconnect OK - gatt connected
+[15:23:54.058] [GB] connect ignored, state=3
+[15:23:54.218] [17s] connected=true state=3 enc=true
+[15:23:55.226] [18s] connected=true state=3 enc=true
+[15:23:56.229] [19s] connected=true state=3 enc=true
+[15:23:56.517] [GB] DISCONNECT event (auth complete, reconnecting...)
+[15:23:56.519] [GB] handleDisconnected
+[15:23:56.519] [GB] autoReconnect: device.gatt.connect()
+[15:23:57.233] [20s] connected=false state=3 enc=true
+[15:23:58.238] [21s] connected=false state=3 enc=true
+[15:23:59.246] [22s] connected=false state=3 enc=true
+[15:24:00.116] [GB] autoReconnect OK - gatt connected
+[15:24:00.117] [GB] connect ignored, state=3
+[15:24:00.254] [23s] connected=true state=3 enc=true
+[15:24:01.262] [24s] connected=true state=3 enc=true
+[15:24:02.266] [25s] connected=true state=3 enc=true
+[15:24:03.270] [26s] connected=true state=3 enc=true
+[15:24:04.277] [27s] connected=true state=3 enc=true
+[15:24:05.282] [28s] connected=true state=3 enc=true
+[15:24:06.290] [29s] connected=true state=3 enc=true
+[15:24:07.297] [30s] connected=true state=3 enc=true
+[15:24:08.302] [31s] connected=true state=3 enc=true
+[15:24:09.310] [32s] connected=true state=3 enc=true
+[15:24:10.317] [33s] connected=true state=3 enc=true
+[15:24:11.321] [34s] connected=true state=3 enc=true
+[15:24:12.325] [35s] connected=true state=3 enc=true
+[15:24:13.339] [36s] connected=true state=3 enc=true
+[15:24:14.346] [37s] connected=true state=3 enc=true
+[15:24:15.354] [38s] connected=true state=3 enc=true
+[15:24:16.358] [39s] connected=true state=3 enc=true
+[15:24:17.366] [40s] connected=true state=3 enc=true
+[15:24:18.369] [41s] connected=true state=3 enc=true
+[15:24:19.374] [42s] connected=true state=3 enc=true
+[15:24:20.381] [43s] connected=true state=3 enc=true
+[15:24:21.386] [44s] connected=true state=3 enc=true
+[15:24:22.394] [45s] connected=true state=3 enc=true
+[15:24:23.402] [46s] connected=true state=3 enc=true
+[15:24:24.407] [47s] connected=true state=3 enc=true
+[15:24:25.414] [48s] connected=true state=3 enc=true
+[15:24:26.419] [49s] connected=true state=3 enc=true
+[15:24:27.427] [50s] connected=true state=3 enc=true
+[15:24:28.434] [51s] connected=true state=3 enc=true
+[15:24:29.438] [52s] connected=true state=3 enc=true
+[15:24:30.445] [53s] connected=true state=3 enc=true
+[15:24:31.451] [54s] connected=true state=3 enc=true
+[15:24:32.459] [55s] connected=true state=3 enc=true
+[15:24:33.463] [56s] connected=true state=3 enc=true
+[15:24:34.471] [57s] connected=true state=3 enc=true
+[15:24:35.479] [58s] connected=true state=3 enc=true
+[15:24:36.487] [59s] connected=true state=3 enc=true
+[15:24:37.495] [60s] connected=true state=3 enc=true
+[15:24:37.498] [GB] FLOW END

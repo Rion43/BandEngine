@@ -258,6 +258,7 @@ const TEST_NAMES: Record<number, string> = {
   9: 'TEST 9: Clock+Battery',
   10: 'TEST 10: Clock+DeviceState',
   11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
+  12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -316,6 +317,28 @@ async function runPostAuth(): Promise<void> {
     const spp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, clockBuf);
     log('sent', `Plaintext Clock AUTH ch (${spp.length}B): ${hexLog(spp)}`);
     await writeBLE(spp);
+    await monitorConnection(30);
+  } else if (test === 12) {
+    // TEST 12: AES-CTR self-test — encrypt+decrypt consistency
+    log('info', '═══ AES-CTR SELF-TEST ═══');
+    const testData = new Uint8Array([0x08, 0x02, 0x10, 0x02, 0x08, 0x02, 0x10, 0x01, 0x08, 0x02, 0x10, 0x4e]);
+    const enc = await authProtocol!.encryptV2(testData);
+    const dec = await authProtocol!.decryptV2(enc);
+    const match = dec.length === testData.length && dec.every((b, i) => b === testData[i]);
+    log('info', `Plaintext:  ${toHex(testData)}`);
+    log('info', `Encrypted:  ${toHex(enc)}`);
+    log('info', `Decrypted:  ${toHex(dec)}`);
+    log('info', `Match: ${match ? '✅ YES' : '❌ NO'}`);
+    if (!match) {
+      log('error', '❌ AES-CTR self-test FAILED! Web Crypto encrypt/decrypt not consistent!');
+    } else {
+      // Şimdi band'a boş bir encrypted DATA gönderelim (sadece channel+opcode, body yok)
+      log('info', 'Sending empty encrypted DATA to band...');
+      const emptyEnc = await authProtocol!.encryptV2(new Uint8Array(0));
+      const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, emptyEnc);
+      log('sent', `Empty encrypted DATA (${spp.length}B): ${hexLog(spp)}`);
+      await writeBLE(spp);
+    }
     await monitorConnection(30);
   } else {
     // TEST 0: Normal — all 4 commands immediately

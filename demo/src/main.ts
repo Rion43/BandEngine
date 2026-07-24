@@ -321,28 +321,11 @@ async function startConnect() {
         const clockCmd = new Uint8Array([0x08, 0x02, 0x10, 0x03]); // type=2, subtype=3 (CMD_CLOCK=3)
         log('info', `Clock cmd: ${toHex(clockCmd)}`);
         const encClock = await authProtocol!.encryptV2(clockCmd);
-        const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, clockCmd);
+        log('info', `Encrypted: ${toHex(encClock)}`);
+        const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
         log('sent', `Clock SPPv2 (${sppClock.length}B): ${hexLog(sppClock)}`);
         await writeBLE(sppClock);
-
-        await new Promise(r => setTimeout(r, 3000));
-
-        // Cevap kontrol et
-        let count = 0;
-        while (true) {
-          try {
-            const n = await withTimeout(waitOneNotification(3000), 3000, 'clock-resp');
-            log('recv', `Clock resp (${n.length}B): ${hexLog(n)}`);
-            const decoded = SppPacketV2.decode(n);
-            if (decoded && decoded.packetType === SppPacketType.DATA && decoded.payload.length >= 2) {
-              if (decoded.opcode === SppDataOpcode.SEND_ENCRYPTED && authProtocol?.keys) {
-                try { const dec = await authProtocol!.decryptV2(decoded.payload.slice(2)); log('info', `  -> DECRYPTED: ${toHex(dec)}`); }
-                catch(e:any) { log('warn', `  Decrypt fail: ${e.message}`); }
-              }
-            }
-            feedSpp(n);
-          } catch { break; }
-        }
+        await new Promise(r => setTimeout(r, 1000));
 
         // 2. Device Info (encrypted)
         log('info', '═══ DEVICE INFO (ENCRYPTED) ═══');
@@ -353,11 +336,6 @@ async function startConnect() {
         const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
         log('sent', `DeviceInfo SPPv2 (${spp.length}B): ${hexLog(spp)}`);
         await writeBLE(spp);
-
-        await new Promise(r => setTimeout(r, 5000));
-        log('info', `Queue: ${notifyQueue.length}, SPP buf: ${sppBuffer.length}B`);
-        for (let i = 0; i < notifyQueue.length; i++) { log('recv', `Q[${i}]: ${hexLog(notifyQueue[i])}`); }
-        if (sppBuffer.length > 0) { log('info', `SPPbuf: ${hexLog(sppBuffer)}`); }
       } catch (be: any) { log('error', `Post-auth: ${be?.message ?? be}`); }
     } else {
       log('error', '✗  AUTH FAILED');

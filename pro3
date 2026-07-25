@@ -1,0 +1,7 @@
+SPP transport protokolünde ciddi bir eksik var: bidirectional ACK yapılmıyor. Şu an sadece bizim gönderdiğimiz paketlere (SPP DATA seq=N biz gönderdiğimizde) bandın attığı SPP ACK seq=N işleniyor. Ama bandın bize gönderdiği her SPP DATA frame’ine karşılık, bizim de ayrıca bir SPP ACK frame’i geri göndermemiz gerekiyor — bu, kendi gönderdiğimiz komutlara gelen ACK’ten tamamen bağımsız bir mekanizma.
+
+Notification handler’ı bul (paket parse edilen yer). opcode === DATA (veya SPP DATA etiketi) her algılandığında:
+
+	1.	Payload’ı normal şekilde işlemeye devam et (mevcut davranış)
+	2.	EK OLARAK: aynı seq numarasıyla bir ACK frame’i oluştur (a5 a5 01 ... formatında, session config’de görülen ACK paket yapısını kullan) ve hemen write characteristic’ine yaz
+	3.	Bu ACK gönderimi, bizim kendi komut kuyruğumuzdaki (CommandQueue) gönderimlerden bağımsız olmalı — komut kuyruğunu bloklamamalı, hemen tetiklenmeli

@@ -1,0 +1,23 @@
+=== Sa — AES-CTR + Gadgetbridge Karşılaştırma Raporu ===
+
+## 1. AES-CTR: ✅ DOĞRU
+Test: node Sa → Web Crypto = Node native (Java birebir).
+Sonuç: encryptV2'de sorun yok.
+
+## 2. Kod Durumu: ✅ Zaten DÜZGÜN OLANLAR
+- bidirectional ACK (DATA → hemen ACK) — 3 kod yolunda da var
+- unknown3=224 — SppAuthMessages.ts satır 155'te zaten var
+- post-auth sıra: Clock → service.initialize()
+- packetSequenceCounter sıfırlanmaz, auth değeriyle devam eder
+- encNonce auth'ta set edilir, sonra değişmez
+
+## 3. BULUNAN HATA (& FİKSU): phoneApiLevel protobuf tipi
+GB: setPhoneApiLevel(SDK_INT) → uint32 → varint (wire type 0)
+Biz: fixed32 + float32 encode ediyorduk → ❌
+
+Fiks: varintField(2, apiLevel) yapıldı.
+
+## 4. DÜŞÜK RİSKLİ FARKLAR
+- phoneName = "BandEngine" (GB: Build.MODEL) — band önemsemez
+- region = navigator.language (GB: Locale.getDefault().getLanguage()) — band önemsemez
+- phoneApiLevel = navigator.userAgentData.platformVersion (GB: Build.VERSION.SDK_INT) — band önemsemez

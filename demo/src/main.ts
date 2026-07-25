@@ -9,7 +9,7 @@ import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 import { CommandQueue } from './CommandQueue.js';
 
-const VERSION = '6.3';
+const VERSION = '6.3.1';
 
 const $ = (id: string) => document.getElementById(id)!;
 

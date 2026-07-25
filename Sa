@@ -1,0 +1,92 @@
+// verify-ctr.js
+// Çalıştır: node verify-ctr.js
+// Amaç: Node'un native crypto (Java'nın Cipher.getInstance("AES/CTR/NoPadding") ile birebir aynı NIST CTR) 
+// modülüyle, Web Crypto API'nin ürettiği ciphertext'i karşılaştırmak.
+
+const nodeCrypto = require('crypto');
+
+async function main() {
+  // Java: SecretKeySpec(key, "AES") + IvParameterSpec(key) -> yani IV = key'in kendisi
+  const key = Buffer.from('b9aae533f8ff83ebf97f5bafaa12008b', 'hex'); // senin gerçek encKey/decKey örneğin (16 byte)
+
+  // Test 1: Tek blok (16 byte) - counter hiç artmıyor
+  const plaintext1 = Buffer.from('48656c6c6f2c204d6942616e64203921', 'hex'); // "Hello, MiBand 9!" (16 byte)
+
+  // Test 2: İki blok (32 byte) - counter bir kez artıyor, GB'nin gerçek komutlarına daha yakın senaryo
+  const plaintext2 = Buffer.concat([
+    Buffer.from('48656c6c6f2c204d6942616e64203921', 'hex'),
+    Buffer.from('5365636f6e6420626c6f636b2074657374', 'hex').slice(0, 16).length === 16
+      ? Buffer.from('5365636f6e6420626c6f636b2074657374'.padEnd(32, '30'), 'hex')
+      : Buffer.alloc(16, 0x42)
+  ]);
+
+  console.log('=== Key ===');
+  console.log('Key hex:', key.toString('hex'), `(${key.length} byte)`);
+  console.log('');
+
+  // ---- YÖNTEM 1: Node native crypto (Java'nınkiyle aynı NIST CTR standardı) ----
+  function nodeCtrEncrypt(key, iv, data) {
+    const cipher = nodeCrypto.createCipheriv('aes-128-ctr', key, iv);
+    return Buffer.concat([cipher.update(data), cipher.final()]);
+  }
+
+  const nodeResult1 = nodeCtrEncrypt(key, key, plaintext1); // IV = key (Java IvParameterSpec(key) gibi)
+  const nodeResult2 = nodeCtrEncrypt(key, key, plaintext2);
+
+  console.log('=== Node native crypto (Java referansı) ===');
+  console.log('Test1 (16B) plaintext :', plaintext1.toString('hex'));
+  console.log('Test1 (16B) ciphertext:', nodeResult1.toString('hex'));
+  console.log('Test2 (32B) plaintext :', plaintext2.toString('hex'));
+  console.log('Test2 (32B) ciphertext:', nodeResult2.toString('hex'));
+  console.log('');
+
+  // ---- YÖNTEM 2: Web Crypto API (senin encryptV2() kullandığın yöntem) ----
+  const webcrypto = globalThis.crypto || require('node:crypto').webcrypto;
+
+  const cryptoKey = await webcrypto.subtle.importKey(
+    'raw',
+    key,
+    { name: 'AES-CTR' },
+    false,
+    ['encrypt']
+  );
+
+  const webResult1 = await webcrypto.subtle.encrypt(
+    { name: 'AES-CTR', counter: key, length: 128 },
+    cryptoKey,
+    plaintext1
+  );
+  const webResult2 = await webcrypto.subtle.encrypt(
+    { name: 'AES-CTR', counter: key, length: 128 },
+    cryptoKey,
+    plaintext2
+  );
+
+  const webResult1Hex = Buffer.from(webResult1).toString('hex');
+  const webResult2Hex = Buffer.from(webResult2).toString('hex');
+
+  console.log('=== Web Crypto API (senin encryptV2()) ===');
+  console.log('Test1 (16B) ciphertext:', webResult1Hex);
+  console.log('Test2 (32B) ciphertext:', webResult2Hex);
+  console.log('');
+
+  // ---- KARŞILAŞTIRMA ----
+  const match1 = nodeResult1.toString('hex') === webResult1Hex;
+  const match2 = nodeResult2.toString('hex') === webResult2Hex;
+
+  console.log('=== SONUÇ ===');
+  console.log('Test1 (tek blok, 16B) eşleşiyor mu?  ', match1 ? '✅ EVET' : '❌ HAYIR');
+  console.log('Test2 (iki blok, 32B) eşleşiyor mu?   ', match2 ? '✅ EVET' : '❌ HAYIR');
+
+  if (match1 && match2) {
+    console.log('\n👉 Web Crypto API, Java/BouncyCastle ile birebir aynı sonucu üretiyor.');
+    console.log('   encryptV2() implementasyonun DOĞRU. Sorun başka yerde (unknown3, packet format vb.) aranmalı.');
+  } else {
+    console.log('\n👉 FARK VAR. Şu ihtimalleri kontrol et:');
+    console.log('   - counter/IV byte sırası (endianness)');
+    console.log('   - key uzunluğu tam 16 byte mı (AES-128) yoksa 32 byte mi (AES-256) bekleniyor');
+    console.log('   - Web Crypto çağrısında "length" parametresi (128 = tüm 16 byte counter, farklı bir değer olmamalı)');
+  }
+}
+
+main().catch(console.error);

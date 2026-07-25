@@ -446,8 +446,13 @@ async function runPostAuth(): Promise<void> {
     async function sendWithReconnect(rawBuf: Uint8Array, label: string): Promise<boolean> {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          if (!gattServer?.connected && attempt > 0) {
-            log('warn', `🔄 [${label}] reconnect attempt ${attempt + 1}...`);
+          // Disconnect kontrolu HER ATTEMPT'te - attempt>0 beklemeye gerek yok
+          if (!gattServer?.connected) {
+            if (attempt === 0) {
+              log('warn', `🔄 [${label}] disconnected, reconnecting...`);
+            } else {
+              log('warn', `🔄 [${label}] reconnect attempt ${attempt + 1}...`);
+            }
             if (!selectedDevice?.gatt) return false;
             gattServer = await selectedDevice.gatt.connect();
             const svc = await gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
@@ -574,6 +579,10 @@ async function startConnect() {
       log('warn', `❗ Device: ${device.name}`);
       setStatus('Disconnected!', false);
       setButtons(false);
+      // Stale referanslari temizle - writeBLE eski char'a yazmasin
+      gattServer = null;
+      writeChar = null;
+      notifyChar = null;
     });
     log('info', '→ gattserverdisconnected listener registered');
 

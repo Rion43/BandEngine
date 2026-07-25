@@ -24,25 +24,22 @@ export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
     return out;
 }
 export { aesCcmEncrypt } from './aes-ccm.js';
-// @ts-ignore
-import * as AsmCrypto from 'asmcrypto.js';
-const ASM_CTR = AsmCrypto?.AES_CTR;
-if (!ASM_CTR || typeof ASM_CTR.encrypt !== 'function') {
-    console.warn('[AES-CTR] asmcrypto.js AES_CTR not found, falling back to Web Crypto');
-}
-/** AES-CTR using asmcrypto.js (Bouncy Castle-compatible).
+/** AES-CTR using Web Crypto API (Gadgetbridge birebir).
  *  Gadgetbridge encryptV2: AES/CTR/NoPadding, key=iv, counter 128-bit.
- *  asmcrypto AES_CTR Bouncy Castle ile aynı backend'i kullanır.
+ *  Java: cipher.init(op, key, IvParameterSpec(key)) -> full 16B counter.
+ *  Web Crypto: counter=encKey(16B), length=128 -> full 128-bit initial counter.
+ *  Her encrypt/decrypt yeni Web Crypto instance -> stateless, Gadgetbridge ile ayni.
  */
-export function aesCtrEncrypt(data, key) {
-    if (ASM_CTR) {
-        const enc = ASM_CTR.encrypt(data, key, key);
-        return new Uint8Array(enc);
-    }
-    // Fallback - never used in practice
-    throw new Error('AES_CTR not available');
+export async function aesCtrEncrypt(data, key) {
+    const k = await crypto.subtle.importKey('raw', key.slice().buffer, 'AES-CTR', false, ['encrypt']);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer);
+    return new Uint8Array(ct);
 }
-export const aesCtrDecrypt = aesCtrEncrypt;
+export async function aesCtrDecrypt(data, key) {
+    const k = await crypto.subtle.importKey('raw', key.slice().buffer, 'AES-CTR', false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer);
+    return new Uint8Array(pt);
+}
 export async function verifyWatchHmac(decKey, watchNonce, phoneNonce, receivedHmac) {
     const buf = new Uint8Array(watchNonce.length + phoneNonce.length);
     buf.set(watchNonce);

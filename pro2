@@ -1,0 +1,8 @@
+
+
+	1.	Auth step 3’teki ECDH key exchange sırasında türetilen session key‘i sakla. Bu key, phone nonce + watch nonce + LTK’den HKDF veya HMAC-SHA256 ile türetiliyor — mevcut auth koduna bak, hesaplama zaten yapılıyor olmalı, sadece kaydedilmiyor.
+	2.	Auth success’ten sonra encryptionEnabled = true flag’i set et.
+	3.	buildSppPacket() veya paket inşa eden fonksiyonu bul. encryptionEnabled true olduğunda, payload’ı göndermeden önce session key ile AES-128-CBC (veya Gadgetbridge’in kullandığı modu bak — muhtemelen CTR ya da CBC) şifrele, ardından normal SPPv2 çerçevesine sar.
+	4.	Gelen şifreli cevapları da aynı session key ile decrypt et.
+
+Gadgetbridge’deki ilgili sınıf: XiaomiAuthService.java — auth result handler’da setEncrypted(true) çağrısı ve ardından XiaomiBleSupport veya XiaomiSppSupport içindeki sendCommand() metodunda encryption branch’i. Bunları bul ve JS’e port et.

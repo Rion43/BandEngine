@@ -34,27 +34,22 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-// @ts-ignore
-import * as AsmCrypto from 'asmcrypto.js';
-const ASM_CTR: any = AsmCrypto?.AES_CTR;
-
-if (!ASM_CTR || typeof ASM_CTR.encrypt !== 'function') {
-  console.warn('[AES-CTR] asmcrypto.js AES_CTR not found, falling back to Web Crypto');
-}
-
-/** AES-CTR using asmcrypto.js (Bouncy Castle-compatible).
+/** AES-CTR using Web Crypto API (Gadgetbridge birebir).
  *  Gadgetbridge encryptV2: AES/CTR/NoPadding, key=iv, counter 128-bit.
- *  asmcrypto AES_CTR Bouncy Castle ile aynı backend'i kullanır.
+ *  Java: cipher.init(op, key, IvParameterSpec(key)) -> full 16B counter.
+ *  Web Crypto: counter=encKey(16B), length=128 -> full 128-bit initial counter.
+ *  Her encrypt/decrypt yeni Web Crypto instance -> stateless, Gadgetbridge ile ayni.
  */
-export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
-  if (ASM_CTR) {
-    const enc = ASM_CTR.encrypt(data, key, key);
-    return new Uint8Array(enc);
-  }
-  // Fallback - never used in practice
-  throw new Error('AES_CTR not available');
+export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, 'AES-CTR', false, ['encrypt']);
+  const ct = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer as ArrayBuffer);
+  return new Uint8Array(ct);
 }
-export const aesCtrDecrypt = aesCtrEncrypt;
+export async function aesCtrDecrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, 'AES-CTR', false, ['decrypt']);
+  const pt = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer as ArrayBuffer);
+  return new Uint8Array(pt);
+}
 
 export async function verifyWatchHmac(
   decKey: Uint8Array, watchNonce: Uint8Array, phoneNonce: Uint8Array, receivedHmac: Uint8Array,

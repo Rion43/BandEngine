@@ -172,7 +172,7 @@ function gattOnCharacteristicChanged(handle: GBDeviceHandle, value: Uint8Array) 
   handle.buffer = merged;
 
   // GB: processBuffer() (144-175)
-  processBuffer(handle);
+  processBuffer(handle).catch(() => {});
 
   // For async waiters
   if (handle.notifyResolve) {
@@ -187,12 +187,12 @@ function gattOnCharacteristicChanged(handle: GBDeviceHandle, value: Uint8Array) 
 // GB: processBuffer (BleProtocolV2.java:144-175)
 //   while loop -> processPacket -> skip/preserve bytes
 // ═══════════════════════════════════════════════════════════════════
-function processBuffer(handle: GBDeviceHandle) {
+async function processBuffer(handle: GBDeviceHandle) {
   let shouldProcess = true;
   while (shouldProcess) {
     const buf = handle.buffer;
     // GB: processPacket returns ParseResult{status, packetSize} (279-339)
-    const result = processPacket(handle, buf);
+    const result = await processPacket(handle, buf);
     let skipBytes = 0;
 
     switch (result.status) {
@@ -219,7 +219,7 @@ function processBuffer(handle: GBDeviceHandle) {
 //   SESSION_CONFIG -> startEncryptedHandshake
 //   DATA -> onPacketReceived -> sendAck
 // ═══════════════════════════════════════════════════════════════════
-function processPacket(handle: GBDeviceHandle, rxBuf: Uint8Array): { status: string; packetSize: number } {
+async function processPacket(handle: GBDeviceHandle, rxBuf: Uint8Array): Promise<{ status: string; packetSize: number }> {
   // GB: min 8 byte (279-285)
   if (rxBuf.length < 8) return { status: 'incomplete', packetSize: 0 };
 
@@ -249,7 +249,7 @@ function processPacket(handle: GBDeviceHandle, rxBuf: Uint8Array): { status: str
       let plainPayload = decoded.payload;
       // GB: getPayloadBytes -> decrypt if SEND_ENCRYPTED
       if (decoded.opcode === SppDataOpcode.SEND_ENCRYPTED && handle.encryptionInitialized && handle.authProtocol) {
-        try { plainPayload = handle.authProtocol.decryptV2(decoded.payload.slice(2)); }
+        try { plainPayload = await handle.authProtocol.decryptV2(decoded.payload.slice(2)); }
         catch {} // decrypt fail -> raw kullan
       }
       onPacketReceived(handle, ch, plainPayload);
@@ -329,7 +329,7 @@ async function sendCommand(handle: GBDeviceHandle, type: number, subtype: number
     await writeRaw(handle, spp);
   } else {
     // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
-    const encrypted = handle.authProtocol!.encryptV2(cmdBytes);
+    const encrypted = await handle.authProtocol!.encryptV2(cmdBytes);
     const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
     log('send', `[GB] ${desc} seq=${spp[3]}`);
     // GB: WriteAction -> latch.await() -> callback bekleme
@@ -486,7 +486,7 @@ async function onAuthSuccess(handle: GBDeviceHandle) {
   // 2. systemService.setCurrentTime() (Support.java:410-412)
   //   XiaomiSystemService.java:316-353 -> Command{type=2, subtype=3, system{clock{...}}}
   const clockBuf = encodeCommandClock();
-  const encClock = handle.authProtocol!.encryptV2(clockBuf);
+  const encClock = await handle.authProtocol!.encryptV2(clockBuf);
   const sppClock = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
   log('send', `[GB] Clock seq=${sppClock[3]}`);
   await writeRaw(handle, sppClock);

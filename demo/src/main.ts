@@ -453,7 +453,7 @@ async function runPostAuth(): Promise<void> {
     let sentFail = 0;
     for (let idx = 0; idx < CMD_LIST.length; idx++) {
       const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
-      const encBuf = authProtocol!.encryptV2(rawBuf);
+      const encBuf = await authProtocol!.encryptV2(rawBuf);
       const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
       const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
       log('sent', `[${label}] seq=${sppBuf[3]}`);

@@ -443,28 +443,73 @@ async function runPostAuth(): Promise<void> {
     }
 
     // send one command with reconnect on disconnect
+    // Birebir Gadgetbridge: disconnect -> autoReconnect -> gatt.connect()
+    // -> cached services -> discoverServices -> queue resume
+    // Web Bluetooth: reconnect sonrasi SessionConfig + auth TEKRAR gerekli
+    // cunku band OS-level bond state'i restore edemiyoruz.
     async function sendWithReconnect(rawBuf: Uint8Array, label: string): Promise<boolean> {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          // Disconnect kontrolu HER ATTEMPT'te - attempt>0 beklemeye gerek yok
           if (!gattServer?.connected) {
-            if (attempt === 0) {
-              log('warn', `🔄 [${label}] disconnected, reconnecting...`);
-            } else {
-              log('warn', `🔄 [${label}] reconnect attempt ${attempt + 1}...`);
-            }
+            log('warn', `🔄 [${label}] disconnected, reconnecting...`);
             if (!selectedDevice?.gatt) return false;
             gattServer = await selectedDevice.gatt.connect();
             const svc = await gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
             const chars = await svc.getCharacteristics();
             writeChar = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
             notifyChar = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
-            if (!writeChar || !notifyChar) return false;
+            if (!writeChar || !notifyChar) { log('error', '[reconnect] 005E/005F not found'); return false; }
             notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
             notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
             await notifyChar.startNotifications();
-            log('info', `✅ [${label}] reconnect OK`);
+            log('info', `✅ [${label}] reconnect + notifications OK`);
+
+            // GB: disconnect sonrasi encryption state KAYBOLUR (Web Bluetooth'ta bond yok)
+            // Band yeni SessionConfig + auth bekler. Tekrar yap.
+            // SessionConfig
+            SppPacketV2.resetSequence();
+            const scPacket = SppPacketV2.buildSessionConfigRequest();
+            log('info', `[reauth] SessionConfig seq=${scPacket[3]}`);
+            await writeBLE(scPacket);
+            // SessionConfig response bekle - notification queue'dan
+            let gotSc = false;
+            for (let i = 0; i < 10; i++) {
+              await new Promise(r => setTimeout(r, 500));
+              if (sppBuffer.length > 0) {
+                // processSpp deklerini gorduk mu?
+                const pkt = SppPacketV2.decode(sppBuffer);
+                if (pkt && pkt.packetType === SppPacketType.SESSION_CONFIG) { gotSc = true; break; }
+              }
+            }
+            log('info', `[reauth] SessionConfig response: ${gotSc ? 'YES' : 'timeout'}`);
+
+            // PhoneNonce
+            const ltkStr = localStorage.getItem('be_ltk')!;
+            const ltk = new Uint8Array(16);
+            for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+            const reAuth = new SppAuthProtocol(ltk);
+            const { packet: pnPacket } = reAuth.buildPhoneNonce();
+            const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
+            log('info', `[reauth] PhoneNonce seq=${sppPn[3]}`);
+            const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'reauth-WatchNonce');
+            if (!wnPayload) { log('error', '[reauth] WatchNonce timeout'); return false; }
+
+            const step3 = await reAuth.processWatchNonce(wnPayload);
+            if (!step3) { log('error', '[reauth] WatchNonce decode failed'); return false; }
+
+            const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
+            log('info', `[reauth] AuthStep3 seq=${sppA3[3]}`);
+            const authPayload = await sendAndWaitAuth(sppA3, 10000, 'reauth-AuthResult');
+            if (!authPayload) { log('error', '[reauth] AuthResult timeout'); return false; }
+
+            const result = reAuth.processAuthResponse(authPayload);
+            if (!result) { log('error', '[reauth] AUTH FAILED'); return false; }
+
+            // Yeni authProtocol'u kullan
+            authProtocol = reAuth;
+            log('info', `🎉 [reauth] AUTH SUCCESS! Encryption restored.`);
           }
+
           const encBuf = authProtocol!.encryptV2(rawBuf);
           const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
           log('sent', `[${label}] seq=${sppBuf[3]}`);

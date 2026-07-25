@@ -34,22 +34,15 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-/** AES-CTR using Web Crypto API (Gadgetbridge birebir).
- *  Gadgetbridge encryptV2: AES/CTR/NoPadding, key=iv, counter 128-bit.
- *  Java: cipher.init(op, key, IvParameterSpec(key)) -> full 16B counter.
- *  Web Crypto: counter=encKey(16B), length=128 -> full 128-bit initial counter.
- *  Her encrypt/decrypt yeni Web Crypto instance -> stateless, Gadgetbridge ile ayni.
- */
-export async function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, 'AES-CTR', false, ['encrypt']);
-  const ct = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer as ArrayBuffer);
-  return new Uint8Array(ct);
+// @noble/ciphers AES-CTR — Java AES/CTR/NoPadding ile birebir
+// Gadgetbridge ctrCrypt: key=encKey, iv=encKey, full 128-bit counter
+import { ctr } from '@noble/ciphers/aes';
+
+export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
+  const cipher = ctr(key, key);
+  return cipher(data);
 }
-export async function aesCtrDecrypt(data: Uint8Array, key: Uint8Array): Promise<Uint8Array> {
-  const k = await crypto.subtle.importKey('raw', key.slice().buffer as ArrayBuffer, 'AES-CTR', false, ['decrypt']);
-  const pt = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer as ArrayBuffer);
-  return new Uint8Array(pt);
-}
+export const aesCtrDecrypt = aesCtrEncrypt;
 
 export async function verifyWatchHmac(
   decKey: Uint8Array, watchNonce: Uint8Array, phoneNonce: Uint8Array, receivedHmac: Uint8Array,

@@ -385,17 +385,12 @@ async function runPostAuth(): Promise<void> {
     // GB MOD: startConnect'te yakalanir, buraya gelmez
     log('error', 'GB MOD should not reach runPostAuth');
   } else if (test === 15) {
-    // ═══ TEST 15: GB onAuthSuccess birebir port ═══
-    //   XiaomiSupport.onAuthSuccess() (Support.java:405-417):
-    //     1. systemService.setCurrentTime() -> Clock (2, 3)
-    //     2. mServiceMap.values().forEach(service.initialize())
-    //        LinkedHashMap order (Support.java:92-105):
-    //          auth(1)->music(18)->health(8)->notif(7)->schedule(17)
-    //          ->weather(10)->system(2)->calendar(12)->watchface(4)
-    //          ->dataUpload(22)->phonebook(21)->rpk(20)
-    //     Her sendCommand -> TransactionBuilder -> WriteAction latch ~50-200ms
-    //     Web Bluetooth: writeWithPacing(150ms) ile callback bekleme taklidi
-    log('info', '═══ TEST 15: GB onAuthSuccess birebir port ═══');
+    // ═══ TEST 15: GB onAuthSuccess birebir port + autoReconnect ═══
+    //   XiaomiSupport.onAuthSuccess() (Support.java:405-417)
+    //   Band bonding tamamlaninca disconnect eder (~70-100ms). Bu NORMAL.
+    //   Gadgetbridge: autoReconnect -> queue kaldigi yerden devam.
+    //   Web Bluetooth: reconnect + rediscover + notification re-enable + devam.
+    log('info', '═══ TEST 15: GB onAuthSuccess birebir port + autoReconnect ═══');
     const GB_SERVICE_INIT_ORDER: { type: number; name: string; commands: { subtype: number; desc: string }[] }[] = [
       { type: 8, name: 'HealthService', commands: [
         { subtype: 0, desc: 'CMD_SET_USER_INFO' },
@@ -437,54 +432,69 @@ async function runPostAuth(): Promise<void> {
       ]},
     ];
 
-    // 1. Clock sync — XiaomiSystemService.setCurrentTime()
-    const clockBuf = encodeCommandClock();
-    const encClock = authProtocol!.encryptV2(clockBuf);
-    const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
-    log('sent', `[GB] Clock (${sppClock.length}B) seq=${sppClock[3]}`);
-    await writeBLE(sppClock);
-    log('info', `[GB] Clock sent, waiting 150ms (WriteAction latch sim)...`);
-    await new Promise(r => setTimeout(r, 150));
-
-    // 2. mServiceMap.values().forEach(service.initialize())
-    let cmdCount = 0;
+    // Build full command list
+    const CMD_LIST: { type: number; subtype: number; desc: string }[] = [
+      { type: 2, subtype: 3, desc: 'Clock' },
+    ];
     for (const svc of GB_SERVICE_INIT_ORDER) {
       for (const cmd of svc.commands) {
-        cmdCount++;
-        const rawBuf = encodeCommandRaw(svc.type, cmd.subtype);
-        const encBuf = authProtocol!.encryptV2(rawBuf);
-        const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
-        log('sent', `[#${cmdCount}] ${svc.name}.${cmd.desc} (type=${svc.type} sub=${cmd.subtype}) seq=${sppBuf[3]}`);
-        await writeBLE(sppBuf);
-        // GB: WriteAction latch ~50-200ms callback bekler
-        await new Promise(r => setTimeout(r, 150));
+        CMD_LIST.push({ type: svc.type, subtype: cmd.subtype, desc: `${svc.name}.${cmd.desc}` });
       }
     }
 
-    log('info', `✅ TEST 15: ${cmdCount + 1} commands sent (1 Clock + ${cmdCount} service init)`);
-    log('info', '📋 GB onAuthSuccess order:');
-    log('info', '   1. Clock(2,3)');
-    log('info', '   2-9. HealthService(8): setUserInfo, SPO2, HR, Standing, Stress, GoalNotif, Goals, Vitality');
-    log('info', '   10-11. NotificationService(7): ScreenOn, CannedMessages');
-    log('info', '   12-15. ScheduleService(17): Alarms, Reminders, WorldClocks, SleepMode');
-    log('info', '   16-17. WeatherService(10): SetWeatherPrefs, GetLocations');
-    log('info', '   18-26. SystemService(2): DevInfo, DevState, Battery, Password, Display, Camera, Widgets, WidgetParts, WorkoutTypes');
-    log('info', '   27. CalendarService(12): CalendarSet');
-
-    const startMs = Date.now();
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 1000));
-      const stillConnected = gattServer?.connected ?? false;
-      log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
-      if (!stillConnected) {
-        log('error', `❌ TEST 15: Connection LOST at ${i + 1}s (${Date.now() - startMs}ms)`);
-        break;
+    // send one command with reconnect on disconnect
+    async function sendWithReconnect(rawBuf: Uint8Array, label: string): Promise<boolean> {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          if (!gattServer?.connected && attempt > 0) {
+            log('warn', `🔄 [${label}] reconnect attempt ${attempt + 1}...`);
+            if (!selectedDevice?.gatt) return false;
+            gattServer = await selectedDevice.gatt.connect();
+            const svc = await gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
+            const chars = await svc.getCharacteristics();
+            writeChar = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
+            notifyChar = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
+            if (!writeChar || !notifyChar) return false;
+            notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
+            notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+            await notifyChar.startNotifications();
+            log('info', `✅ [${label}] reconnect OK`);
+          }
+          const encBuf = authProtocol!.encryptV2(rawBuf);
+          const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
+          log('sent', `[${label}] seq=${sppBuf[3]}`);
+          await writeBLE(sppBuf);
+          return true;
+        } catch (e: any) {
+          log('warn', `[${label}] attempt ${attempt + 1}: ${e?.message ?? e}`);
+          if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+        }
       }
+      log('error', `✗ [${label}] 3 attempts failed`);
+      return false;
     }
-    if (Date.now() - startMs >= 60000) {
-      log('info', `✅ TEST 15: Connection stayed alive 60s! Band pairing modundan cikti.`);
+
+    let sentOk = 0;
+    let sentFail = 0;
+    for (let idx = 0; idx < CMD_LIST.length; idx++) {
+      const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
+      const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
+      if (await sendWithReconnect(rawBuf, label)) sentOk++; else sentFail++;
+      await new Promise(r => setTimeout(r, 150));
+    }
+
+    log('info', `✅ TEST 15: ${sentOk} OK, ${sentFail} FAIL (${CMD_LIST.length} commands)`);
+    if (sentFail === 0) {
+      log('info', `🎉 Tum komutlar gitti. Band pairing modundan cikmis olmali!`);
       localStorage.setItem('be_paired', 'true');
     }
+    const startMs = Date.now();
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      log('info', `  [${i + 1}s] connected=${gattServer?.connected ?? false}`);
+      if (!gattServer?.connected) break;
+    }
+    if (Date.now() - startMs >= 30000) log('info', `✅ 30s stable`);
   }
 
   log('info', `========== ${tname} END ==========`);

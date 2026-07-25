@@ -34,31 +34,13 @@ export async function computeAuthStep3Hmac(
 
 export { aesCcmEncrypt } from './aes-ccm.js';
 
-// Manual AES-CTR using @noble/ciphers AES-ECB
-// Java Gadgetbridge: cipher.init(op, key, IvParameterSpec(key))
-// key = encKey (16B), iv = encKey (16B) -> counter block = key
-// Her block: keystream = AES_ECB_encrypt(key, counter)
-// XOR ile plaintext -> ciphertext
-// Counter 128-bit big-endian artar
-import { ecb } from '@noble/ciphers/aes';
+// @noble/ciphers AES-CTR — NIST SP 800-38A standardı
+// Gadgetbridge ctrCrypt: AES/CTR/NoPadding, key=encKey, iv=encKey
+// Java IvParameterSpec(key) = 16-byte initial counter block
+import { ctr } from '@noble/ciphers/aes';
 
 export function aesCtrEncrypt(data: Uint8Array, key: Uint8Array): Uint8Array {
-  const cipher = ecb(key);
-  const BLOCK = 16;
-  const counter = key.slice(); // initial counter = key (Gadgetbridge IvParameterSpec(key))
-  const out = new Uint8Array(data.length);
-
-  for (let off = 0; off < data.length; off += BLOCK) {
-    const ks = cipher.encrypt(counter);
-    const end = Math.min(off + BLOCK, data.length);
-    for (let i = off; i < end; i++) out[i] = data[i] ^ ks[i - off];
-    // counter++ (128-bit big-endian)
-    for (let i = BLOCK - 1; i >= 0; i--) {
-      counter[i]++;
-      if (counter[i] !== 0 || i === 0) break;
-    }
-  }
-  return out;
+  return ctr(key, key)(data);
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 

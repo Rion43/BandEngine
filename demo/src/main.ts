@@ -7,6 +7,7 @@ import { toHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo, encodeCommandBattery, encodeCommandRaw } from '../../src/SppSystemMessages.js';
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
+import { CommandQueue } from './CommandQueue.js';
 
 const VERSION = '6.0-test15';
 
@@ -79,12 +80,21 @@ let authResolve: ((p: Uint8Array | null) => void) | null = null;
 
 const ackTracker = new SppAckTracker();
 
+// ── ACK-based CommandQueue (Gadgetbridge txWin=3 flow control) ──
+const cmdQueue = new CommandQueue();
+cmdQueue.onDisconnect = () => {
+  log('warn', '[Queue] disconnect detected, resetting pending ACKs');
+  cmdQueue.reset();
+};
+
 // ── Persistent BLE handler ──
 function onBleNotify(this: BluetoothRemoteGATTCharacteristic, event: Event) {
   const value = new Uint8Array((event.target as unknown as BluetoothRemoteGATTCharacteristic).value!.buffer);
   if (notifyResolve) { notifyResolve(value); notifyResolve = null; }
   else { notifyQueue.push(value); }
   feedSpp(value);
+  // CommandQueue ACK parser
+  cmdQueue.feedNotification(value);
 }
 
 // ── SPPv2 reassembly ──
@@ -385,12 +395,8 @@ async function runPostAuth(): Promise<void> {
     // GB MOD: startConnect'te yakalanir, buraya gelmez
     log('error', 'GB MOD should not reach runPostAuth');
   } else if (test === 15) {
-    // ═══ TEST 15: GB onAuthSuccess birebir port + autoReconnect ═══
-    //   XiaomiSupport.onAuthSuccess() (Support.java:405-417)
-    //   Band bonding tamamlaninca disconnect eder (~70-100ms). Bu NORMAL.
-    //   Gadgetbridge: autoReconnect -> queue kaldigi yerden devam.
-    //   Web Bluetooth: reconnect + rediscover + notification re-enable + devam.
-    log('info', '═══ TEST 15: GB onAuthSuccess birebir port + autoReconnect ═══');
+    // ═══ TEST 15: GB onAuthSuccess birebir port + ACK queue ═══
+    log('info', '═══ TEST 15: GB onAuthSuccess + CommandQueue (ACK-based) ═══');
     const GB_SERVICE_INIT_ORDER: { type: number; name: string; commands: { subtype: number; desc: string }[] }[] = [
       { type: 8, name: 'HealthService', commands: [
         { subtype: 0, desc: 'CMD_SET_USER_INFO' },
@@ -432,7 +438,6 @@ async function runPostAuth(): Promise<void> {
       ]},
     ];
 
-    // Build full command list
     const CMD_LIST: { type: number; subtype: number; desc: string }[] = [
       { type: 2, subtype: 3, desc: 'Clock' },
     ];
@@ -442,109 +447,85 @@ async function runPostAuth(): Promise<void> {
       }
     }
 
-    // send one command with reconnect on disconnect
-    // Birebir Gadgetbridge: disconnect -> autoReconnect -> gatt.connect()
-    // -> cached services -> discoverServices -> queue resume
-    // Web Bluetooth: reconnect sonrasi SessionConfig + auth TEKRAR gerekli
-    // cunku band OS-level bond state'i restore edemiyoruz.
-    async function sendWithReconnect(rawBuf: Uint8Array, label: string): Promise<boolean> {
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          if (!gattServer?.connected) {
-            log('warn', `🔄 [${label}] disconnected, reconnecting...`);
-            if (!selectedDevice?.gatt) return false;
+    cmdQueue.reset();
+
+    let sentOk = 0;
+    let sentFail = 0;
+    for (let idx = 0; idx < CMD_LIST.length; idx++) {
+      const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
+      const encBuf = authProtocol!.encryptV2(rawBuf);
+      const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
+      const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
+      log('sent', `[${label}] seq=${sppBuf[3]}`);
+      try {
+        await cmdQueue.enqueue(writeChar, sppBuf);
+        sentOk++;
+        log('info', `[${label}] OK (${sentOk}/${CMD_LIST.length})`);
+      } catch (e: any) {
+        sentFail++;
+        log('error', `[${label}] FAIL: ${e.message}`);
+        // Disconnect olduysa reconnect + reauth dene
+        if (!gattServer?.connected && selectedDevice?.gatt) {
+          log('warn', `🔄 Reconnecting + reauthenticating...`);
+          try {
             gattServer = await selectedDevice.gatt.connect();
             const svc = await gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
             const chars = await svc.getCharacteristics();
             writeChar = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
             notifyChar = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
-            if (!writeChar || !notifyChar) { log('error', '[reconnect] 005E/005F not found'); return false; }
+            if (!writeChar || !notifyChar) break;
             notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
             notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
             await notifyChar.startNotifications();
-            log('info', `✅ [${label}] reconnect + notifications OK`);
+            cmdQueue.reset();
 
-            // GB: disconnect sonrasi encryption state KAYBOLUR (Web Bluetooth'ta bond yok)
-            // Band yeni SessionConfig + auth bekler. Tekrar yap.
-            // SessionConfig
+            // SessionConfig + re-auth
             SppPacketV2.resetSequence();
-            const scPacket = SppPacketV2.buildSessionConfigRequest();
-            log('info', `[reauth] SessionConfig seq=${scPacket[3]}`);
-            await writeBLE(scPacket);
-            // SessionConfig response bekle - notification queue'dan
-            let gotSc = false;
-            for (let i = 0; i < 10; i++) {
-              await new Promise(r => setTimeout(r, 500));
-              if (sppBuffer.length > 0) {
-                // processSpp deklerini gorduk mu?
-                const pkt = SppPacketV2.decode(sppBuffer);
-                if (pkt && pkt.packetType === SppPacketType.SESSION_CONFIG) { gotSc = true; break; }
-              }
-            }
-            log('info', `[reauth] SessionConfig response: ${gotSc ? 'YES' : 'timeout'}`);
-
-            // PhoneNonce
+            await cmdQueue.enqueue(writeChar, SppPacketV2.buildSessionConfigRequest());
             const ltkStr = localStorage.getItem('be_ltk')!;
             const ltk = new Uint8Array(16);
             for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
             const reAuth = new SppAuthProtocol(ltk);
             const { packet: pnPacket } = reAuth.buildPhoneNonce();
             const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
-            log('info', `[reauth] PhoneNonce seq=${sppPn[3]}`);
-            const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'reauth-WatchNonce');
-            if (!wnPayload) { log('error', '[reauth] WatchNonce timeout'); return false; }
-
+            await cmdQueue.enqueue(writeChar, sppPn);
+            // Wait for WatchNonce via authResolve
+            const wnPayload = await new Promise<Uint8Array | null>(r => {
+              const t = setTimeout(() => { if (authResolve === r) authResolve = null; r(null); }, 10000);
+              authResolve = (p) => { clearTimeout(t); authResolve = null; r(p); };
+            });
+            if (!wnPayload) break;
             const step3 = await reAuth.processWatchNonce(wnPayload);
-            if (!step3) { log('error', '[reauth] WatchNonce decode failed'); return false; }
-
+            if (!step3) break;
             const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
-            log('info', `[reauth] AuthStep3 seq=${sppA3[3]}`);
-            const authPayload = await sendAndWaitAuth(sppA3, 10000, 'reauth-AuthResult');
-            if (!authPayload) { log('error', '[reauth] AuthResult timeout'); return false; }
-
-            const result = reAuth.processAuthResponse(authPayload);
-            if (!result) { log('error', '[reauth] AUTH FAILED'); return false; }
-
-            // Yeni authProtocol'u kullan
+            await cmdQueue.enqueue(writeChar, sppA3);
+            const authPayload = await new Promise<Uint8Array | null>(r => {
+              const t = setTimeout(() => { if (authResolve === r) authResolve = null; r(null); }, 10000);
+              authResolve = (p) => { clearTimeout(t); authResolve = null; r(p); };
+            });
+            if (!authPayload || !reAuth.processAuthResponse(authPayload)) break;
             authProtocol = reAuth;
-            log('info', `🎉 [reauth] AUTH SUCCESS! Encryption restored.`);
+            log('info', `🎉 Re-auth success, resuming at #${idx + 2}...`);
+          } catch (ea: any) {
+            log('error', `Reconnect+reauth failed: ${ea.message}`);
+            break;
           }
-
-          const encBuf = authProtocol!.encryptV2(rawBuf);
-          const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
-          log('sent', `[${label}] seq=${sppBuf[3]}`);
-          await writeBLE(sppBuf);
-          return true;
-        } catch (e: any) {
-          log('warn', `[${label}] attempt ${attempt + 1}: ${e?.message ?? e}`);
-          if (attempt < 2) await new Promise(r => setTimeout(r, 500));
+        } else {
+          break;
         }
       }
-      log('error', `✗ [${label}] 3 attempts failed`);
-      return false;
     }
 
-    let sentOk = 0;
-    let sentFail = 0;
-    for (let idx = 0; idx < CMD_LIST.length; idx++) {
-      const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
-      const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
-      if (await sendWithReconnect(rawBuf, label)) sentOk++; else sentFail++;
-      await new Promise(r => setTimeout(r, 150));
-    }
-
-    log('info', `✅ TEST 15: ${sentOk} OK, ${sentFail} FAIL (${CMD_LIST.length} commands)`);
-    if (sentFail === 0) {
-      log('info', `🎉 Tum komutlar gitti. Band pairing modundan cikmis olmali!`);
+    log('info', `✅ TEST 15: ${sentOk} OK, ${sentFail} FAIL`);
+    if (sentFail === 0 && sentOk === CMD_LIST.length) {
+      log('info', `🎉 All 27 commands ACKed. Band pairing complete!`);
       localStorage.setItem('be_paired', 'true');
     }
-    const startMs = Date.now();
     for (let i = 0; i < 30; i++) {
       await new Promise(r => setTimeout(r, 1000));
       log('info', `  [${i + 1}s] connected=${gattServer?.connected ?? false}`);
       if (!gattServer?.connected) break;
     }
-    if (Date.now() - startMs >= 30000) log('info', `✅ 30s stable`);
   }
 
   log('info', `========== ${tname} END ==========`);

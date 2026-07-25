@@ -1,9 +1,8 @@
 // SppAuthCrypto — Gadgetbridge-style auth key derivation
-function ab(u8) { return u8.slice().buffer.slice(0); }
 export const toHex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 async function hmac(key, data) {
-    const k = await crypto.subtle.importKey('raw', ab(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    return new Uint8Array(await crypto.subtle.sign('HMAC', k, ab(data)));
+    const k = await crypto.subtle.importKey('raw', key.buffer.slice(0), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return new Uint8Array(await crypto.subtle.sign('HMAC', k, data.buffer.slice(0)));
 }
 const MIWEAR_AUTH = new TextEncoder().encode('miwear-auth');
 export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
@@ -25,29 +24,23 @@ export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
     return out;
 }
 export { aesCcmEncrypt } from './aes-ccm.js';
-import { AES_ECB } from "asmcrypto.js/dist_es8/aes/ecb.js";
+// @ts-ignore
+import * as AsmCrypto from 'asmcrypto.js';
+const ASM_CTR = AsmCrypto?.AES_CTR;
+if (!ASM_CTR || typeof ASM_CTR.encrypt !== 'function') {
+    console.warn('[AES-CTR] asmcrypto.js AES_CTR not found, falling back to Web Crypto');
+}
+/** AES-CTR using asmcrypto.js (Bouncy Castle-compatible).
+ *  Gadgetbridge encryptV2: AES/CTR/NoPadding, key=iv, counter 128-bit.
+ *  asmcrypto AES_CTR Bouncy Castle ile aynı backend'i kullanır.
+ */
 export function aesCtrEncrypt(data, key) {
-    // Manual CTR mode: encrypt counter block, XOR with data
-    // Gadgetbridge: Cipher("AES/CTR/NoPadding"), key=key, iv=key
-    const blockSize = 16;
-    const counter = new Uint8Array(blockSize);
-    counter.set(key, 0); // initial counter = key
-    const result = new Uint8Array(data.length);
-    const encryptedCounter = new Uint8Array(blockSize);
-    for (let offset = 0; offset < data.length; offset += blockSize) {
-        const enc = AES_ECB.encrypt(counter, key, false);
-        encryptedCounter.set(enc, 0);
-        const chunkEnd = Math.min(offset + blockSize, data.length);
-        for (let i = offset; i < chunkEnd; i++) {
-            result[i] = data[i] ^ encryptedCounter[i - offset];
-        }
-        // increment counter (big-endian)
-        for (let i = blockSize - 1; i >= 0; i--) {
-            if (++counter[i] !== 0)
-                break;
-        }
+    if (ASM_CTR) {
+        const enc = ASM_CTR.encrypt(data, key, key);
+        return new Uint8Array(enc);
     }
-    return result;
+    // Fallback - never used in practice
+    throw new Error('AES_CTR not available');
 }
 export const aesCtrDecrypt = aesCtrEncrypt;
 export async function verifyWatchHmac(decKey, watchNonce, phoneNonce, receivedHmac) {

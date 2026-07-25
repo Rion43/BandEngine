@@ -8,7 +8,7 @@ import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystem
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod-v7';
+const VERSION = '6.0-gbmod-v8';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -539,6 +539,8 @@ async function startConnect() {
     const result = authProtocol.processAuthResponse(authPayload);
     if (result) {
       log('info', '🎉  AUTH SUCCESS!');
+      // İlk başarılı pairing tamamlandı, sonraki reconnect'lerde kullan
+      localStorage.setItem('be_paired', 'true');
       setStatus('✓ Authenticated', true);
       setButtons(true);
 
@@ -582,6 +584,8 @@ btnConnect.onclick = async () => {
         optionalServices: [],
       });
       await gbFullFlow(gbHandle, dev, setStatus);
+      // GB MOD bittikten sonra paired flag set
+      localStorage.setItem('be_paired', 'true');
     } catch (e: any) {
       log('error', `GB MOD error: ${e?.message ?? e}`);
     }

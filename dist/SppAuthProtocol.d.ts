@@ -32,7 +32,7 @@ export declare class SppAuthProtocol {
      * Step 3: Process auth response (status check)
      */
     processAuthResponse(authPayload: Uint8Array): boolean;
-    encryptV2(plaintext: Uint8Array): Uint8Array;
-    decryptV2(ciphertext: Uint8Array): Uint8Array;
+    encryptV2(plaintext: Uint8Array): Promise<Uint8Array>;
+    decryptV2(ciphertext: Uint8Array): Promise<Uint8Array>;
     reset(): void;
 }

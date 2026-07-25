@@ -22,6 +22,11 @@ function isForceDisconnectStatus(status: number): boolean {
   return status === 0x81 || status === 0x85 || status === 0x08 || status === 0x93;
 }
 
+// ── Write pacing: Gadgetbridge her WriteAction sonrasi callback bekler (~50-200ms) ──
+// Web Bluetooth writeValueWithoutResponse callback'siz, band flood olur.
+//   => encrypted komutlar arasinda bekle.
+const WRITE_PACING_MS = 150;
+
 // ── GB mServiceMap initialize sirasi (XiaomiSupport.java:92-105) ──
 //   Her service.initialize() icinde kendi sendCommand'lari
 //   Gadgetbridge'de COMMAND_TYPE her service'in kendi sabiti
@@ -324,12 +329,28 @@ async function sendCommand(handle: GBDeviceHandle, type: number, subtype: number
     await writeRaw(handle, spp);
   } else {
     // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
-    //   DataPacket.getPacketPayloadBytes -> encryptV2(payload) (SppPacketV2.java:375)
     const encrypted = handle.authProtocol!.encryptV2(cmdBytes);
     const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
     log('send', `[GB] ${desc} seq=${spp[3]}`);
-    await writeRaw(handle, spp);
+    // GB: WriteAction -> latch.await() -> callback bekleme
+    // Web Bluetooth: writeValueWithoutResponse, pacing ile flood önle
+    await writeWithPacing(handle, spp);
   }
+}
+
+// ── GB: sendCommand with pacing ──
+//   Gadgetbridge'de WriteAction latch ile callback bekler (~50-200ms/komut).
+//   Web Bluetooth writeValueWithoutResponse callback'siz, hepsini birden yollar -> band flood.
+//   Bu nedenle encrypted komutlar arasina WRITE_PACING_MS bekle koy.
+let lastWriteTime = 0;
+async function writeWithPacing(handle: GBDeviceHandle, data: Uint8Array): Promise<void> {
+  const now = Date.now();
+  const elapsed = now - lastWriteTime;
+  if (elapsed < WRITE_PACING_MS && lastWriteTime > 0) {
+    await new Promise(r => setTimeout(r, WRITE_PACING_MS - elapsed));
+  }
+  lastWriteTime = Date.now();
+  await writeRaw(handle, data);
 }
 
 // ── GB protobuf Command field encoder: {type=1, subtype=N} ──
@@ -481,7 +502,15 @@ async function onAuthSuccess(handle: GBDeviceHandle) {
   }
 
   log('info', '[GB] INIT COMPLETE — all services initialized');
-  handle.fullyInitialized = true;  // PAIRING TAMAMLANDI - artık auto-reconnect güvenli
+  // fullyInitialized: İLK AUCTION SONRASI FALSE kalir.
+  //   Sebep: Web Bluetooth OS-level bonding tutmaz. Band pairing modunda disconnect
+  //   olunca, reconnect yeni bir auth gerektirir ama band hala pairing ekranindadir.
+  //   Android Gadgetbridge'de BtLEQueue + OS bond state ile queue korunur.
+  //   Web Bluetooth'ta boyle bir mekanizma yok.
+  //   Cozum: İlk pairing akisinda autoReconnect YAPMA. Kullanici manuel reconnect etsin.
+  //   XiaomiSupport.onAuthSuccess (Support.java:405-417): only INITIALIZED state set
+  handle.initCompleteTime = Date.now();
+  // fullyInitialized false kalir -> handleDisconnected autoReconnect atlamaz
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -497,48 +526,43 @@ async function handleDisconnected(handle: GBDeviceHandle): Promise<void> {
   // GB: pending latch'lari countDown (410-417)
 
   // GB: autoReconnect (447-464, 471-485)
-  // Sadece FULL INIT TAMAMLANDIKTAN 60sn SONRA reconnect et (pairing bozulmasın)
-  if (handle.state === State.INITIALIZED && handle.autoReconnect && handle.fullyInitialized && handle.device?.gatt) {
-    const timeSinceInit = Date.now() - handle.initCompleteTime;
-    if (timeSinceInit < 60000) {
-      // İlk 60sn içinde reconnect ETME - pairing tamamlanıyor olabilir
-      log('info', `[GB] Disconnect ignored (within 60s of init): ${Date.now() - handle.initCompleteTime}ms since init`);
-      handle.state = State.NOT_CONNECTED;
-      return;
-    }
-
-    log('info', `[GB] autoReconnect: device.gatt.connect() (${Date.now() - handle.initCompleteTime}ms after init)`);
+  // İlk pairing akisinda autoReconnect YAPMA.
+  //   Web Bluetooth OS-level bond state tutmaz. Band pairing modunda disconnect
+  //   olunca reconnect band'i pairing ekraninda tutar. Kullanici manuel reconnect
+  //   etmeli. Sonraki baglantilarda (be_paired localStorage) reconnect guvenli.
+  const paired = localStorage.getItem('be_paired') === 'true';
+  if (handle.state === State.INITIALIZED && handle.autoReconnect && paired && handle.device?.gatt) {
+    log('info', `[GB] autoReconnect: device.gatt.connect()`);
     try {
       await handle.device!.gatt!.connect();
       log('info', `[GB] autoReconnect OK - gatt connected`);
 
-        // CRITICAL: Reconnect sonrası gattServer referansını GÜNCELLE
-        handle.gattServer = handle.device!.gatt!;
+      // CRITICAL: Reconnect sonrası gattServer referansını GÜNCELLE
+      handle.gattServer = handle.device!.gatt!;
 
-        // GB: reconnect sonrası servisleri yeniden keşfet + karakteristikleri yeniden al
-        // GB: onServicesDiscovered -> cached services? -> initializeDevice
-        // Web Bluetooth'ta cached services genelde boş, discoverServices gerekir
-        try {
-          await gattConnect(handle);
-        } catch {
-          // servis bulunamadı, direkt karakteristikleri yeniden almayı dene
-        }
-        handle.state = State.INITIALIZED;
-        // Notification'lari yeniden enable (Web Bluetooth gereksinimi)
-        if (handle.btCharacteristicRead) {
-          try { await handle.btCharacteristicRead.startNotifications(); } catch {}
-        }
-      } catch (e: any) {
-        log('error', `[GB] autoReconnect failed: ${e.message}`);
-        // GB: forceDisconnect (459)
-        try { handle.gattServer?.disconnect(); } catch {}
-        handle.state = State.NOT_CONNECTED;
+      // GB: reconnect sonrası servisleri yeniden keşfet + karakteristikleri yeniden al
+      // GB: onServicesDiscovered -> cached services? -> initializeDevice
+      try {
+        await gattConnect(handle);
+      } catch {
+        // servis bulunamadı, direkt karakteristikleri yeniden almayı dene
       }
-    } else {
-      // GB: WAITING_FOR_RECONNECT (479-480)
-      log('info', '[GB] autoReconnect: delayed (gatt null)');
-      handle.state = State.WAITING_FOR_RECONNECT;
+      handle.state = State.INITIALIZED;
+      // Notification'lari yeniden enable (Web Bluetooth gereksinimi)
+      if (handle.btCharacteristicRead) {
+        try { await handle.btCharacteristicRead.startNotifications(); } catch {}
+      }
+    } catch (e: any) {
+      log('error', `[GB] autoReconnect failed: ${e.message}`);
+      // GB: forceDisconnect (459)
+      try { handle.gattServer?.disconnect(); } catch {}
+      handle.state = State.NOT_CONNECTED;
     }
+  } else {
+    // İlk pairing: reconnect YAPMA, manual beklenir
+    log('info', `[GB] Disconnect final. paired=${paired} state=${handle.state} auto=${handle.autoReconnect}`);
+    handle.state = State.NOT_CONNECTED;
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════

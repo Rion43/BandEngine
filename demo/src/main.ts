@@ -518,8 +518,12 @@ btnSaveKey.addEventListener('click', () => {
     wizardStatus.innerHTML = '❌ 32 hex karakter girin'; wizardStatus.style.display = 'block'; return;
   }
   localStorage.setItem('be_ltk', ltkInput.value.toLowerCase());
+  // Yeni key girildi -> pairing flag'ini sifirla (yeni pairing gerekecek)
+  localStorage.removeItem('be_paired');
+  console.log(`[Key] Yeni LTK kaydedildi: ${ltkInput.value.toLowerCase()}`);
+  console.log(`[Key] be_paired silindi - yeni pairing bekleniyor`);
   wizardStatus.className = 'wizard-status success';
-  wizardStatus.innerHTML = '✅ Key saved';
+  wizardStatus.innerHTML = `✅ Key saved (${ltkInput.value.length} chars)`;
   wizardStatus.style.display = 'block';
   setTimeout(() => { showMainUI(); }, 1500);
 });
@@ -601,8 +605,10 @@ async function startConnect() {
     log('info', '═══ 2. AUTH PHONE NONCE ═══');
 
     const ltkStr = localStorage.getItem('be_ltk')!;
+    log('info', `🔑 LTK from localStorage: ${ltkStr} (${ltkStr.length} chars)`);
     const ltk = new Uint8Array(16);
     for (let i = 0; i < 16; i++) ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+    log('info', `🔑 LTK hex: ${toHex(ltk)}`);
 
     authProtocol = new SppAuthProtocol(ltk);
 

@@ -90,6 +90,16 @@ export function encodeCommandBattery(): Uint8Array {
   return buf;
 }
 
+/** Gadgetbridge Command{type=X, subtype=Y} protobuf encoder.
+ *  Birebir XiaomiSupport.sendCommand(taskName, type, subtype) ile ayni:
+ *    Command.newBuilder().setType(type).setSubtype(subtype).build()
+ */
+export function encodeCommandRaw(type: number, subtype: number): Uint8Array {
+  const msg = Command.create({ type, subtype });
+  const buf = Command.encode(msg).finish();
+  return buf;
+}
+
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }

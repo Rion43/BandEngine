@@ -4,11 +4,11 @@ import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
 import { toHex } from '../../src/SppAuthMessages.js';
-import { encodeCommandClock, encodeCommandDeviceInfo } from '../../src/SppSystemMessages.js';
+import { encodeCommandClock, encodeCommandDeviceInfo, encodeCommandBattery, encodeCommandRaw } from '../../src/SppSystemMessages.js';
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 
-const VERSION = '6.0-gbmod-v8';
+const VERSION = '6.0-test15';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -45,7 +45,8 @@ function initTestSelector() {
       const names = ['Normal','TEST 1: idle','TEST 2: Clock','TEST 3: Battery',
         'TEST 4: DeviceInfo','TEST 5: DeviceState','TEST 6: slow 500ms',
         'TEST 7: slow 1000ms','TEST 8: Clock+DI','TEST 9: Clock+Bat',
-        'TEST 10: Clock+State'];
+        'TEST 10: Clock+State','TEST 11: Plaintext Clock','TEST 12: AES-CTR',
+        'TEST 13: Reconnect','TEST 14: GB MOD','TEST 15: GB onAuthSuccess (30+ komut)'];
       log('info', `🧪 Selected: ${names[selectedTest] ?? '?'}`);
     });
   });
@@ -263,6 +264,7 @@ const TEST_NAMES: Record<number, string> = {
   12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
   13: 'TEST 13: Reconnect sonrasi Clock',
   14: 'GB MOD: full GB flow + autoReconnect (final)',
+  15: 'TEST 15: GB onAuthSuccess birebir port (30+ komut)',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -382,6 +384,107 @@ async function runPostAuth(): Promise<void> {
   } else if (test === 14) {
     // GB MOD: startConnect'te yakalanir, buraya gelmez
     log('error', 'GB MOD should not reach runPostAuth');
+  } else if (test === 15) {
+    // ═══ TEST 15: GB onAuthSuccess birebir port ═══
+    //   XiaomiSupport.onAuthSuccess() (Support.java:405-417):
+    //     1. systemService.setCurrentTime() -> Clock (2, 3)
+    //     2. mServiceMap.values().forEach(service.initialize())
+    //        LinkedHashMap order (Support.java:92-105):
+    //          auth(1)->music(18)->health(8)->notif(7)->schedule(17)
+    //          ->weather(10)->system(2)->calendar(12)->watchface(4)
+    //          ->dataUpload(22)->phonebook(21)->rpk(20)
+    //     Her sendCommand -> TransactionBuilder -> WriteAction latch ~50-200ms
+    //     Web Bluetooth: writeWithPacing(150ms) ile callback bekleme taklidi
+    log('info', '═══ TEST 15: GB onAuthSuccess birebir port ═══');
+    const GB_SERVICE_INIT_ORDER: { type: number; name: string; commands: { subtype: number; desc: string }[] }[] = [
+      { type: 8, name: 'HealthService', commands: [
+        { subtype: 0, desc: 'CMD_SET_USER_INFO' },
+        { subtype: 8, desc: 'CMD_CONFIG_SPO2_GET' },
+        { subtype: 10, desc: 'CMD_CONFIG_HEART_RATE_GET' },
+        { subtype: 12, desc: 'CMD_CONFIG_STANDING_REMINDER_GET' },
+        { subtype: 14, desc: 'CMD_CONFIG_STRESS_GET' },
+        { subtype: 21, desc: 'CMD_CONFIG_GOAL_NOTIFICATION_GET' },
+        { subtype: 42, desc: 'CMD_CONFIG_GOALS_GET' },
+        { subtype: 35, desc: 'CMD_CONFIG_VITALITY_SCORE_GET' },
+      ]},
+      { type: 7, name: 'NotificationService', commands: [
+        { subtype: 6, desc: 'CMD_SCREEN_ON_ON_NOTIFICATIONS_GET' },
+        { subtype: 9, desc: 'CMD_CANNED_MESSAGES_GET' },
+      ]},
+      { type: 17, name: 'ScheduleService', commands: [
+        { subtype: 0, desc: 'CMD_ALARMS_GET' },
+        { subtype: 14, desc: 'CMD_REMINDERS_GET' },
+        { subtype: 10, desc: 'CMD_WORLD_CLOCKS_GET' },
+        { subtype: 8, desc: 'CMD_SLEEP_MODE_GET' },
+      ]},
+      { type: 10, name: 'WeatherService', commands: [
+        { subtype: 9, desc: 'CMD_SET_WEATHER_PREFS' },
+        { subtype: 5, desc: 'CMD_GET_LOCATIONS' },
+      ]},
+      { type: 2, name: 'SystemService', commands: [
+        { subtype: 2, desc: 'CMD_DEVICE_INFO' },
+        { subtype: 78, desc: 'CMD_DEVICE_STATE_GET' },
+        { subtype: 1, desc: 'CMD_BATTERY' },
+        { subtype: 9, desc: 'CMD_PASSWORD_GET' },
+        { subtype: 29, desc: 'CMD_DISPLAY_ITEMS_GET' },
+        { subtype: 7, desc: 'CMD_CAMERA_REMOTE_GET' },
+        { subtype: 51, desc: 'CMD_WIDGET_SCREENS_GET' },
+        { subtype: 53, desc: 'CMD_WIDGET_PARTS_GET' },
+        { subtype: 39, desc: 'CMD_WORKOUT_TYPES_GET' },
+      ]},
+      { type: 12, name: 'CalendarService', commands: [
+        { subtype: 1, desc: 'CMD_CALENDAR_SET' },
+      ]},
+    ];
+
+    // 1. Clock sync — XiaomiSystemService.setCurrentTime()
+    const clockBuf = encodeCommandClock();
+    const encClock = authProtocol!.encryptV2(clockBuf);
+    const sppClock = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encClock);
+    log('sent', `[GB] Clock (${sppClock.length}B) seq=${sppClock[3]}`);
+    await writeBLE(sppClock);
+    log('info', `[GB] Clock sent, waiting 150ms (WriteAction latch sim)...`);
+    await new Promise(r => setTimeout(r, 150));
+
+    // 2. mServiceMap.values().forEach(service.initialize())
+    let cmdCount = 0;
+    for (const svc of GB_SERVICE_INIT_ORDER) {
+      for (const cmd of svc.commands) {
+        cmdCount++;
+        const rawBuf = encodeCommandRaw(svc.type, cmd.subtype);
+        const encBuf = authProtocol!.encryptV2(rawBuf);
+        const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
+        log('sent', `[#${cmdCount}] ${svc.name}.${cmd.desc} (type=${svc.type} sub=${cmd.subtype}) seq=${sppBuf[3]}`);
+        await writeBLE(sppBuf);
+        // GB: WriteAction latch ~50-200ms callback bekler
+        await new Promise(r => setTimeout(r, 150));
+      }
+    }
+
+    log('info', `✅ TEST 15: ${cmdCount + 1} commands sent (1 Clock + ${cmdCount} service init)`);
+    log('info', '📋 GB onAuthSuccess order:');
+    log('info', '   1. Clock(2,3)');
+    log('info', '   2-9. HealthService(8): setUserInfo, SPO2, HR, Standing, Stress, GoalNotif, Goals, Vitality');
+    log('info', '   10-11. NotificationService(7): ScreenOn, CannedMessages');
+    log('info', '   12-15. ScheduleService(17): Alarms, Reminders, WorldClocks, SleepMode');
+    log('info', '   16-17. WeatherService(10): SetWeatherPrefs, GetLocations');
+    log('info', '   18-26. SystemService(2): DevInfo, DevState, Battery, Password, Display, Camera, Widgets, WidgetParts, WorkoutTypes');
+    log('info', '   27. CalendarService(12): CalendarSet');
+
+    const startMs = Date.now();
+    for (let i = 0; i < 60; i++) {
+      await new Promise(r => setTimeout(r, 1000));
+      const stillConnected = gattServer?.connected ?? false;
+      log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
+      if (!stillConnected) {
+        log('error', `❌ TEST 15: Connection LOST at ${i + 1}s (${Date.now() - startMs}ms)`);
+        break;
+      }
+    }
+    if (Date.now() - startMs >= 60000) {
+      log('info', `✅ TEST 15: Connection stayed alive 60s! Band pairing modundan cikti.`);
+      localStorage.setItem('be_paired', 'true');
+    }
   }
 
   log('info', `========== ${tname} END ==========`);

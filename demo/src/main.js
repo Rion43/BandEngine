@@ -245,13 +245,13 @@ async function drainNotifications(initialTimeout) {
 // ── Post-auth test helpers ──
 async function sendEncrypted(cmd, label) {
     // 1. Raw protobuf plaintext
-    console.log(`[HEX-DEBUG] plaintext (${cmd.length}B): ${bytesToHex(cmd)}`);
+    log('info', `[HEX-DEBUG] plaintext (${cmd.length}B): ${bytesToHex(cmd)}`);
     // 2. Encrypted payload (AES-CTR, encKey=IV=key)
     const enc = await authProtocol.encryptV2(cmd);
-    console.log(`[HEX-DEBUG] encrypted (${enc.length}B): ${bytesToHex(enc)}`);
+    log('info', `[HEX-DEBUG] encrypted (${enc.length}B): ${bytesToHex(enc)}`);
     // 3. SPP frame with opcode
     const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-    console.log(`[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
+    log('info', `[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
     await writeBLE(spp);
 }
 function getBatteryCmd() { return new Uint8Array([0x08, 0x02, 0x10, 0x01]); }
@@ -478,11 +478,11 @@ async function runPostAuth() {
         let sentFail = 0;
         for (let idx = 0; idx < CMD_LIST.length; idx++) {
             const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
-            console.log(`[HEX-DEBUG] plaintext (${rawBuf.length}B): ${bytesToHex(rawBuf)}`);
+            log('info', `[HEX-DEBUG] plaintext (${rawBuf.length}B): ${bytesToHex(rawBuf)}`);
             const encBuf = await authProtocol.encryptV2(rawBuf);
-            console.log(`[HEX-DEBUG] encrypted (${encBuf.length}B): ${bytesToHex(encBuf)}`);
+            log('info', `[HEX-DEBUG] encrypted (${encBuf.length}B): ${bytesToHex(encBuf)}`);
             const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
-            console.log(`[HEX-DEBUG] SPP frame (${sppBuf.length}B): ${bytesToHex(sppBuf)}`);
+            log('info', `[HEX-DEBUG] SPP frame (${sppBuf.length}B): ${bytesToHex(sppBuf)}`);
             const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
             log('sent', `[${label}] seq=${sppBuf[3]}`);
             try {

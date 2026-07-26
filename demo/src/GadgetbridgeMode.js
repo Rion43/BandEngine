@@ -325,10 +325,10 @@ async function sendCommand(handle, type, subtype, desc) {
     else {
         // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
         const encrypted = await handle.authProtocol.encryptV2(cmdBytes);
-        console.log(`[HEX-DEBUG] plaintext (${cmdBytes.length}B): ${bytesToHex(cmdBytes)}`);
-        console.log(`[HEX-DEBUG] encrypted (${encrypted.length}B): ${bytesToHex(encrypted)}`);
+        log('info', `[HEX-DEBUG] plaintext (${cmdBytes.length}B): ${bytesToHex(cmdBytes)}`);
+        log('info', `[HEX-DEBUG] encrypted (${encrypted.length}B): ${bytesToHex(encrypted)}`);
         const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
-        console.log(`[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
+        log('info', `[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
         // GB: WriteAction -> latch.await() -> callback bekleme
         // Web Bluetooth: writeValueWithoutResponse, pacing ile flood önle
         await writeWithPacing(handle, spp);
@@ -486,11 +486,11 @@ async function onAuthSuccess(handle) {
     // 2. systemService.setCurrentTime() (Support.java:410-412)
     //   XiaomiSystemService.java:316-353 -> Command{type=2, subtype=3, system{clock{...}}}
     const clockBuf = encodeCommandClock();
-    console.log(`[HEX-DEBUG] plaintext (${clockBuf.length}B): ${bytesToHex(clockBuf)}`);
+    log('info', `[HEX-DEBUG] plaintext (${clockBuf.length}B): ${bytesToHex(clockBuf)}`);
     const encClock = await handle.authProtocol.encryptV2(clockBuf);
-    console.log(`[HEX-DEBUG] encrypted (${encClock.length}B): ${bytesToHex(encClock)}`);
+    log('info', `[HEX-DEBUG] encrypted (${encClock.length}B): ${bytesToHex(encClock)}`);
     const sppClock = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
-    console.log(`[HEX-DEBUG] SPP frame (${sppClock.length}B): ${bytesToHex(sppClock)}`);
+    log('info', `[HEX-DEBUG] SPP frame (${sppClock.length}B): ${bytesToHex(sppClock)}`);
     await writeRaw(handle, sppClock);
     // 3. mServiceMap.values().forEach(service.initialize()) (Support.java:414-416)
     for (const svc of SERVICE_INIT) {

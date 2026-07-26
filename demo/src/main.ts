@@ -591,7 +591,6 @@ async function runPostAuth(): Promise<void> {
     log('info', `[HEX-DEBUG] SPP frame (${cSpp.length}B): ${bytesToHex(cSpp)}`);
     await writeBLE(cSpp);
     await monitorConnection(30);
-  }
 
   } else if (test === 19) {
     // TEST D: Plaintext protobuf PROTOBUF_COMMAND kanalinda, SEND_PLAINTEXT

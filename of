@@ -1,15 +1,5 @@
+Clock komutunun plaintext hex’i doğrulandı: 08 02 10 03 — bu sadece type=2, subtype=3 header’ı, field 3 (nested payload/data) tamamen eksik.
 
+Xiaomi protobuf komut yapısı type(field1) + subtype(field2) + payload(field3, length-delimited nested message) şeklinde olmalı — auth mesajlarındaki gibi (1a <len> <nested bytes>).
 
-	1.	git clone --depth 1 zaten gadget brige var bizde sen indirme boşuna.  https://codeberg.org/Freeyourgadget/Gadgetbridge.git /tmp/gadgetbridge-ref çalıştır (yoksa https://github.com/Freeyourgadget/Gadgetbridge.git dene).
-	2.	Şu dosyaları bul ve oku:
-	•	app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/xiaomi/XiaomiSupport.java
-	•	app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/xiaomi/auth/XiaomiAuthService.java
-	•	app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/xiaomi/XiaomiCharacteristic.java
-	•	XiaomiBleSupport.java ve XiaomiSppSupport.java (varsa)
-	3.	Özellikle şu noktaları çıkar ve bana özetle:
-	•	onAuthSuccess / handleAuthResult içinde, auth başarılı olduktan sonra ilk gönderilen komut tam olarak ne (Clock mi, DeviceInfo mi, başka bir “confirm/ready” paketi mi var)?
-	•	İlk komuttan önce bir bekleme (delay/sleep) var mı?
-	•	Post-auth şifreleme moduna geçerken counter/nonce sıfırlanıyor mu, yoksa auth’takiyle mi devam ediyor? (Bizim encNonce‘ı her paket için mi artırıyoruz, yoksa sabit mi tutuyoruz — buradaki fark disconnect’in nedeni olabilir.)
-	•	TransactionBuilder veya eşdeğeri, komutlar arasında ACK dışında ek bir gecikme (queueing delay, connection priority request vb.) uyguluyor mu?
-	4.	Bulduklarını bizim TypeScript implementasyonumuzdaki (SppAuthProtocol.ts, BluetoothManager.ts) karşılık gelen kısımlarla satır satır karşılaştır, farkı işaretle.
-	5.	Fark varsa bizim kodu Gadgetbridge’in davranışına birebir uyacak şekilde düzelt.
+Clock komutunu oluşturan fonksiyonu bul (muhtemelen buildClockCommand() veya GadgetbridgeMode.ts içinde). Şu an sadece type+subtype yazıp gönderiyor, gerçek saat verisini (epoch timestamp, timezone offset, DST) içeren nested mesajı eklemiyor. Gadgetbridge’in gerçek SystemService/setCurrentTime() implementasyonunu incele, field 3’e ne konulması gerektiğini (muhtemelen XiaomiProto.Clock mesajı: yıl/ay/gün/saat/dakika/saniye/timezone alanları) bul ve ekle.

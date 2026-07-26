@@ -9,7 +9,7 @@ import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 import { CommandQueue } from './CommandQueue.js';
 
-const VERSION = '6.3.3';
+const VERSION = '6.3.4';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -443,8 +443,8 @@ async function runPostAuth(): Promise<void> {
       ]},
     ];
 
-    const CMD_LIST: { type: number; subtype: number; desc: string }[] = [
-      { type: 2, subtype: 3, desc: 'Clock' },
+    const CMD_LIST: { type: number; subtype: number; desc: string; encode?: () => Uint8Array }[] = [
+      { type: 2, subtype: 3, desc: 'Clock', encode: () => encodeCommandClock() },
     ];
     for (const svc of GB_SERVICE_INIT_ORDER) {
       for (const cmd of svc.commands) {
@@ -457,7 +457,8 @@ async function runPostAuth(): Promise<void> {
     let sentOk = 0;
     let sentFail = 0;
     for (let idx = 0; idx < CMD_LIST.length; idx++) {
-      const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
+      const encodeFn = CMD_LIST[idx].encode;
+      const rawBuf = encodeFn ? encodeFn() : encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
       log('info', `[HEX-DEBUG] plaintext (${rawBuf.length}B): ${bytesToHex(rawBuf)}`);
       const encBuf = await authProtocol!.encryptV2(rawBuf);
       log('info', `[HEX-DEBUG] encrypted (${encBuf.length}B): ${bytesToHex(encBuf)}`);

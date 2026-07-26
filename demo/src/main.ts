@@ -9,7 +9,7 @@ import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 import { CommandQueue } from './CommandQueue.js';
 
-const VERSION = '6.3.1';
+const VERSION = '6.3.2';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -235,9 +235,14 @@ async function drainNotifications(initialTimeout: number) {
 // ── Post-auth test helpers ──
 
 async function sendEncrypted(cmd: Uint8Array, label: string): Promise<void> {
+  // 1. Raw protobuf plaintext
+  log('info', `[${label}] plaintext (${cmd.length}B): ${hexLog(cmd)}`);
+  // 2. Encrypted payload (AES-CTR, encKey=IV=key)
   const enc = await authProtocol!.encryptV2(cmd);
+  log('info', `[${label}] encrypted (${enc.length}B): ${hexLog(enc)}`);
+  // 3. SPP frame with opcode
   const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-  log('sent', `${label} SPPv2 (${spp.length}B): ${hexLog(spp)}`);
+  log('sent', `[${label}] SPPv2 SEND_ENCRYPTED seq=${spp[3]} (${spp.length}B): ${hexLog(spp)}`);
   await writeBLE(spp);
 }
 

@@ -321,17 +321,19 @@ async function writeRaw(handle: GBDeviceHandle, data: Uint8Array): Promise<void>
 async function sendCommand(handle: GBDeviceHandle, type: number, subtype: number, desc: string): Promise<void> {
   // GB: protobuf Command{type, subtype} (XiaomiSupport.java:424-429)
   const cmdBytes = buildProtobufCommand(type, subtype);
+  log('info', `[GB] ${desc} plaintext (${cmdBytes.length}B): ${toHex(cmdBytes)}`);
 
   if (type === 1) {
     // GB: encodePacket(Authentication, payload) -> SEND_PLAINTEXT
     const spp = encodePacket(handle, SppChannel.AUTHENTICATION, cmdBytes);
-    log('send', `[GB] ${desc} auth seq=${spp[3]}`);
+    log('sent', `[GB] ${desc} SPPv2 SEND_PLAINTEXT seq=${spp[3]} (${spp.length}B): ${toHex(spp)}`);
     await writeRaw(handle, spp);
   } else {
     // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
     const encrypted = await handle.authProtocol!.encryptV2(cmdBytes);
+    log('info', `[GB] ${desc} encrypted (${encrypted.length}B): ${toHex(encrypted)}`);
     const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
-    log('send', `[GB] ${desc} seq=${spp[3]}`);
+    log('sent', `[GB] ${desc} SPPv2 SEND_ENCRYPTED seq=${spp[3]} (${spp.length}B): ${toHex(spp)}`);
     // GB: WriteAction -> latch.await() -> callback bekleme
     // Web Bluetooth: writeValueWithoutResponse, pacing ile flood önle
     await writeWithPacing(handle, spp);

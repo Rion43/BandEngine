@@ -3,8 +3,12 @@ import { log, hex as hexLog } from './logger.js';
 import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src/SppPacketV2.js';
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
-import { toHex } from '../../src/SppAuthMessages.js';
-const VERSION = '5.4-manual-ctr';
+import { toHex, bytesToHex } from '../../src/SppAuthMessages.js';
+import { encodeCommandClock, encodeCommandDeviceInfo, encodeCommandRaw } from '../../src/SppSystemMessages.js';
+import { diagWriteDebug } from './BluefyDiagnostic.js';
+import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
+import { CommandQueue } from './CommandQueue.js';
+const VERSION = '6.3.3';
 const $ = (id) => document.getElementById(id);
 const btnConnect = $('btn-connect');
 const btnDisconnect = $('btn-disconnect');
@@ -18,6 +22,47 @@ const btnSaveKey = $('btn-save-key');
 const wizardStatus = $('wizard-status');
 const ltkChars = $('ltk-chars');
 versionBadge.textContent = `v${VERSION}`;
+// ── Diagnostic Test Selection ──
+let selectedTest = 0; // 0=normal, 1-12 = tests
+function initTestSelector() {
+    const radios = document.querySelectorAll('.diag-radio');
+    radios.forEach((el, i) => {
+        el.addEventListener('click', () => {
+            radios.forEach(e => e.classList.remove('selected'));
+            el.classList.add('selected');
+            const dot = el.querySelector('.diag-dot');
+            dot.textContent = '●';
+            // Reset other dots
+            radios.forEach((e) => {
+                if (e !== el)
+                    e.querySelector('.diag-dot').textContent = '○';
+            });
+            selectedTest = parseInt(el.getAttribute('data-value') ?? '0');
+            const names = ['Normal', 'TEST 1: idle', 'TEST 2: Clock', 'TEST 3: Battery',
+                'TEST 4: DeviceInfo', 'TEST 5: DeviceState', 'TEST 6: slow 500ms',
+                'TEST 7: slow 1000ms', 'TEST 8: Clock+DI', 'TEST 9: Clock+Bat',
+                'TEST 10: Clock+State', 'TEST 11: Plaintext Clock', 'TEST 12: AES-CTR',
+                'TEST 13: Reconnect', 'TEST 14: GB MOD', 'TEST 15: GB onAuthSuccess (30+ komut)'];
+            log('info', `🧪 Selected: ${names[selectedTest] ?? '?'}`);
+        });
+    });
+    // Default: select Normal
+    if (radios.length > 0)
+        radios[0].click();
+}
+$('diag-toggle').addEventListener('click', () => {
+    const body = $('diag-body');
+    const toggle = $('diag-toggle');
+    if (body.style.display === 'none') {
+        body.style.display = 'flex';
+        toggle.textContent = '🧪 Diagnostic Test ▾';
+    }
+    else {
+        body.style.display = 'none';
+        toggle.textContent = '🧪 Diagnostic Test ▸';
+    }
+});
+let selectedDevice = null;
 let gattServer = null;
 let writeChar = null;
 let notifyChar = null;
@@ -27,6 +72,12 @@ let notifyQueue = [];
 let notifyResolve = null;
 let authResolve = null;
 const ackTracker = new SppAckTracker();
+// ── ACK-based CommandQueue (Gadgetbridge txWin=3 flow control) ──
+const cmdQueue = new CommandQueue();
+cmdQueue.onDisconnect = () => {
+    log('warn', '[Queue] disconnect detected, resetting pending ACKs');
+    cmdQueue.reset();
+};
 // ── Persistent BLE handler ──
 function onBleNotify(event) {
     const value = new Uint8Array(event.target.value.buffer);
@@ -38,6 +89,8 @@ function onBleNotify(event) {
         notifyQueue.push(value);
     }
     feedSpp(value);
+    // CommandQueue ACK parser
+    cmdQueue.feedNotification(value);
 }
 // ── SPPv2 reassembly ──
 function feedSpp(data) {
@@ -127,12 +180,12 @@ function waitOneNotification(timeoutMs) {
         notifyResolve = (v) => { clearTimeout(t); resolve(v); };
     });
 }
-/** Register authResolve BEFORE write, then wait for response — race condition fix. */
 async function sendAndWaitAuth(data, timeoutMs, label) {
     return new Promise((resolve) => {
         if (authResolve)
             authResolve(null);
-        const t = setTimeout(() => { authResolve = null; log('warn', `⏱ ${label} timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
+        const t = setTimeout(() => { if (authResolve === resolve)
+            authResolve = null; log('warn', `⏱ ${label} timeout ${timeoutMs}ms`); resolve(null); }, timeoutMs);
         authResolve = (p) => { clearTimeout(t); authResolve = null; resolve(p); };
         writeBLE(data).catch((e) => { clearTimeout(t); authResolve = null; log('error', `${label} write failed: ${e.message}`); resolve(null); });
     });
@@ -141,12 +194,29 @@ async function writeBLE(data) {
     if (!writeChar)
         throw new Error('no writeChar');
     const ab = data.slice().buffer;
-    if (writeChar.properties.writeWithoutResponse) {
-        await writeChar.writeValueWithoutResponse(ab);
+    const pktType = data[2] & 0x0f;
+    let opcodeStr = '';
+    if (pktType === 3 && data.length >= 10) {
+        const ch = SppChannel[data[8]] ?? '?';
+        const op = SppDataOpcode[data[9]] ?? '?';
+        opcodeStr = `DATA:${ch}/${op}`;
     }
-    else {
-        await writeChar.writeValue(ab);
-    }
+    else if (pktType === 2)
+        opcodeStr = 'SESSION_CONFIG';
+    else if (pktType === 1)
+        opcodeStr = 'ACK';
+    else
+        opcodeStr = `type=${pktType}`;
+    const { ok } = await diagWriteDebug(async () => {
+        if (writeChar.properties.writeWithoutResponse) {
+            await writeChar.writeValueWithoutResponse(ab);
+        }
+        else {
+            await writeChar.writeValue(ab);
+        }
+    }, writeChar.uuid, data.length, opcodeStr);
+    if (!ok)
+        throw new Error('write failed');
 }
 function withTimeout(p, ms, label) {
     return Promise.race([p, new Promise((_, r) => setTimeout(() => r(new Error(`⏱ ${label} ${ms}ms`)), ms))]);
@@ -171,6 +241,330 @@ async function drainNotifications(initialTimeout) {
     catch (e) {
         log('warn', `Notification drain: ${e.message}`);
     }
+}
+// ── Post-auth test helpers ──
+async function sendEncrypted(cmd, label) {
+    // 1. Raw protobuf plaintext
+    console.log(`[HEX-DEBUG] plaintext (${cmd.length}B): ${bytesToHex(cmd)}`);
+    // 2. Encrypted payload (AES-CTR, encKey=IV=key)
+    const enc = await authProtocol.encryptV2(cmd);
+    console.log(`[HEX-DEBUG] encrypted (${enc.length}B): ${bytesToHex(enc)}`);
+    // 3. SPP frame with opcode
+    const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
+    console.log(`[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
+    await writeBLE(spp);
+}
+function getBatteryCmd() { return new Uint8Array([0x08, 0x02, 0x10, 0x01]); }
+function getDeviceStateCmd() { return new Uint8Array([0x08, 0x02, 0x10, 0x4e]); }
+async function monitorConnection(durationSec) {
+    const startMs = Date.now();
+    for (let i = 0; i < durationSec; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        const stillConnected = gattServer?.connected ?? false;
+        log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
+        if (!stillConnected) {
+            log('error', `❌ Connection LOST at ${i + 1}s (${Date.now() - startMs}ms after auth)`);
+            return;
+        }
+    }
+    log('info', `✅ Connection stayed alive for ${durationSec}s`);
+}
+const TEST_NAMES = {
+    0: 'Normal (4 komut)',
+    1: 'TEST 1: 30s idle',
+    2: 'TEST 2: Clock only',
+    3: 'TEST 3: Battery only',
+    4: 'TEST 4: DeviceInfo only',
+    5: 'TEST 5: DeviceState only',
+    6: 'TEST 6: Clock→500→DI→500→Bat→500→State',
+    7: 'TEST 7: Clock→1000→DI→1000→Bat→1000→State',
+    8: 'TEST 8: Clock+DeviceInfo',
+    9: 'TEST 9: Clock+Battery',
+    10: 'TEST 10: Clock+DeviceState',
+    11: 'TEST 11: Plaintext Clock (AUTH ch, SEND_PLAINTEXT)',
+    12: 'TEST 12: AES-CTR self-test (encryptV2+decryptV2)',
+    13: 'TEST 13: Reconnect sonrasi Clock',
+    14: 'GB MOD: full GB flow + autoReconnect (final)',
+    15: 'TEST 15: GB onAuthSuccess birebir port (30+ komut)',
+};
+async function runPostAuth() {
+    const test = selectedTest;
+    const tname = TEST_NAMES[test] ?? `TEST ${test}`;
+    log('info', `========== ${tname} START ==========`);
+    if (test === 1) {
+        // TEST 1: 30s idle
+        await monitorConnection(30);
+    }
+    else if (test === 2) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await monitorConnection(30);
+    }
+    else if (test === 3) {
+        await sendEncrypted(getBatteryCmd(), 'Battery');
+        await monitorConnection(30);
+    }
+    else if (test === 4) {
+        await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');
+        await monitorConnection(30);
+    }
+    else if (test === 5) {
+        await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
+        await monitorConnection(30);
+    }
+    else if (test === 6) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await new Promise(r => setTimeout(r, 500));
+        await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');
+        await new Promise(r => setTimeout(r, 500));
+        await sendEncrypted(getBatteryCmd(), 'Battery');
+        await new Promise(r => setTimeout(r, 500));
+        await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
+        await monitorConnection(30);
+    }
+    else if (test === 7) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await new Promise(r => setTimeout(r, 1000));
+        await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');
+        await new Promise(r => setTimeout(r, 1000));
+        await sendEncrypted(getBatteryCmd(), 'Battery');
+        await new Promise(r => setTimeout(r, 1000));
+        await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
+        await monitorConnection(30);
+    }
+    else if (test === 8) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await sendEncrypted(encodeCommandDeviceInfo(), 'DeviceInfo');
+        await monitorConnection(30);
+    }
+    else if (test === 9) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await sendEncrypted(getBatteryCmd(), 'Battery');
+        await monitorConnection(30);
+    }
+    else if (test === 10) {
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        await sendEncrypted(getDeviceStateCmd(), 'DeviceState');
+        await monitorConnection(30);
+    }
+    else if (test === 11) {
+        // TEST 11: Plaintext Clock on Authentication channel
+        const clockBuf = encodeCommandClock();
+        const spp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, clockBuf);
+        log('sent', `Plaintext Clock AUTH ch (${spp.length}B): ${hexLog(spp)}`);
+        await writeBLE(spp);
+        await monitorConnection(30);
+    }
+    else if (test === 12) {
+        // TEST 12: AES-CTR consistency — encrypt with encKey, decrypt with encKey (symmetric)
+        log('info', '═══ AES-CTR SELF-TEST ═══');
+        const key = authProtocol.keys;
+        const testData = new Uint8Array([0x08, 0x02, 0x10, 0x02, 0x08, 0x02, 0x10, 0x01, 0x08, 0x02, 0x10, 0x4e]);
+        // encrypt with encKey, then decrypt with encKey (CTR is symmetric, same key)
+        const { aesCtrEncrypt } = await import('../../src/SppAuthCrypto.js');
+        const enc = await aesCtrEncrypt(testData, key.encKey);
+        const dec = await aesCtrEncrypt(enc, key.encKey); // CTR: encrypt with same key = decrypt
+        const match = dec.length === testData.length && dec.every((b, i) => b === testData[i]);
+        log('info', `Plaintext:  ${toHex(testData)}`);
+        log('info', `Encrypted:  ${toHex(enc)}`);
+        log('info', `Decrypted:  ${toHex(dec)}`);
+        log('info', `Match: ${match ? '✅ YES' : '❌ NO'}`);
+        if (match) {
+            log('info', '✅ AES-CTR self-test PASSED. Web Crypto consistent.');
+            // Şimdi band'a boş encrypted DATA gönder (encKey ile şifrele, band decKey ile decrypt eder)
+            log('info', 'Sending empty encrypted DATA to band...');
+            const emptyEnc = await authProtocol.encryptV2(new Uint8Array(0));
+            const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, emptyEnc);
+            log('sent', `Empty enc DATA (${spp.length}B): ${hexLog(spp)}`);
+            await writeBLE(spp);
+        }
+        else {
+            log('error', '❌ AES-CTR self-test FAILED! Web Crypto bug!');
+        }
+        await monitorConnection(30);
+    }
+    else if (test === 13) {
+        // TEST 13: Disconnect olunca reconnect + Clock
+        log('info', '═══ TEST 13: RECONNECT AFTER DISCONNECT ═══');
+        await sendEncrypted(encodeCommandClock(), 'Clock');
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const stillConnected = gattServer?.connected ?? false;
+            log('info', `  [${i + 1}s] connected=${stillConnected} queue=${notifyQueue.length} sppBuf=${sppBuffer.length}`);
+            if (!stillConnected && gattServer) {
+                log('info', '🔄 Disconnect oldu, yeniden bağlanıyorum...');
+                try {
+                    const dev = gattServer.device;
+                    if (dev) {
+                        gattServer = await dev.gatt.connect();
+                        log('info', 'Reconnect OK');
+                        if (notifyChar) {
+                            notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
+                            notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+                            try {
+                                await notifyChar.startNotifications();
+                            }
+                            catch { }
+                        }
+                        await sendEncrypted(encodeCommandClock(), 'Clock(2)');
+                        log('info', '✅ Reconnect + Clock success');
+                    }
+                }
+                catch (e) {
+                    log('error', `Reconnect failed: ${e.message}`);
+                }
+                await new Promise(r => setTimeout(r, 5000));
+                log('info', `After reconnect: connected=${gattServer?.connected ?? false}`);
+                break;
+            }
+        }
+    }
+    else if (test === 14) {
+        // GB MOD: startConnect'te yakalanir, buraya gelmez
+        log('error', 'GB MOD should not reach runPostAuth');
+    }
+    else if (test === 15) {
+        // ═══ TEST 15: GB onAuthSuccess birebir port + ACK queue ═══
+        log('info', '═══ TEST 15: GB onAuthSuccess + CommandQueue (ACK-based) ═══');
+        const GB_SERVICE_INIT_ORDER = [
+            { type: 8, name: 'HealthService', commands: [
+                    { subtype: 0, desc: 'CMD_SET_USER_INFO' },
+                    { subtype: 8, desc: 'CMD_CONFIG_SPO2_GET' },
+                    { subtype: 10, desc: 'CMD_CONFIG_HEART_RATE_GET' },
+                    { subtype: 12, desc: 'CMD_CONFIG_STANDING_REMINDER_GET' },
+                    { subtype: 14, desc: 'CMD_CONFIG_STRESS_GET' },
+                    { subtype: 21, desc: 'CMD_CONFIG_GOAL_NOTIFICATION_GET' },
+                    { subtype: 42, desc: 'CMD_CONFIG_GOALS_GET' },
+                    { subtype: 35, desc: 'CMD_CONFIG_VITALITY_SCORE_GET' },
+                ] },
+            { type: 7, name: 'NotificationService', commands: [
+                    { subtype: 6, desc: 'CMD_SCREEN_ON_ON_NOTIFICATIONS_GET' },
+                    { subtype: 9, desc: 'CMD_CANNED_MESSAGES_GET' },
+                ] },
+            { type: 17, name: 'ScheduleService', commands: [
+                    { subtype: 0, desc: 'CMD_ALARMS_GET' },
+                    { subtype: 14, desc: 'CMD_REMINDERS_GET' },
+                    { subtype: 10, desc: 'CMD_WORLD_CLOCKS_GET' },
+                    { subtype: 8, desc: 'CMD_SLEEP_MODE_GET' },
+                ] },
+            { type: 10, name: 'WeatherService', commands: [
+                    { subtype: 9, desc: 'CMD_SET_WEATHER_PREFS' },
+                    { subtype: 5, desc: 'CMD_GET_LOCATIONS' },
+                ] },
+            { type: 2, name: 'SystemService', commands: [
+                    { subtype: 2, desc: 'CMD_DEVICE_INFO' },
+                    { subtype: 78, desc: 'CMD_DEVICE_STATE_GET' },
+                    { subtype: 1, desc: 'CMD_BATTERY' },
+                    { subtype: 9, desc: 'CMD_PASSWORD_GET' },
+                    { subtype: 29, desc: 'CMD_DISPLAY_ITEMS_GET' },
+                    { subtype: 7, desc: 'CMD_CAMERA_REMOTE_GET' },
+                    { subtype: 51, desc: 'CMD_WIDGET_SCREENS_GET' },
+                    { subtype: 53, desc: 'CMD_WIDGET_PARTS_GET' },
+                    { subtype: 39, desc: 'CMD_WORKOUT_TYPES_GET' },
+                ] },
+            { type: 12, name: 'CalendarService', commands: [
+                    { subtype: 1, desc: 'CMD_CALENDAR_SET' },
+                ] },
+        ];
+        const CMD_LIST = [
+            { type: 2, subtype: 3, desc: 'Clock' },
+        ];
+        for (const svc of GB_SERVICE_INIT_ORDER) {
+            for (const cmd of svc.commands) {
+                CMD_LIST.push({ type: svc.type, subtype: cmd.subtype, desc: `${svc.name}.${cmd.desc}` });
+            }
+        }
+        cmdQueue.reset();
+        let sentOk = 0;
+        let sentFail = 0;
+        for (let idx = 0; idx < CMD_LIST.length; idx++) {
+            const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
+            console.log(`[HEX-DEBUG] plaintext (${rawBuf.length}B): ${bytesToHex(rawBuf)}`);
+            const encBuf = await authProtocol.encryptV2(rawBuf);
+            console.log(`[HEX-DEBUG] encrypted (${encBuf.length}B): ${bytesToHex(encBuf)}`);
+            const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
+            console.log(`[HEX-DEBUG] SPP frame (${sppBuf.length}B): ${bytesToHex(sppBuf)}`);
+            const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
+            log('sent', `[${label}] seq=${sppBuf[3]}`);
+            try {
+                await cmdQueue.enqueue(writeChar, sppBuf);
+                sentOk++;
+                log('info', `[${label}] OK (${sentOk}/${CMD_LIST.length})`);
+            }
+            catch (e) {
+                sentFail++;
+                log('error', `[${label}] FAIL: ${e.message}`);
+                // Disconnect olduysa reconnect + reauth dene
+                if (!gattServer?.connected && selectedDevice?.gatt) {
+                    log('warn', `🔄 Reconnecting + reauthenticating...`);
+                    try {
+                        gattServer = await selectedDevice.gatt.connect();
+                        const svc = await gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb');
+                        const chars = await svc.getCharacteristics();
+                        writeChar = chars.find(c => c.uuid.toLowerCase().includes('005f')) ?? null;
+                        notifyChar = chars.find(c => c.uuid.toLowerCase().includes('005e')) ?? null;
+                        if (!writeChar || !notifyChar)
+                            break;
+                        notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
+                        notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
+                        await notifyChar.startNotifications();
+                        cmdQueue.reset();
+                        // SessionConfig + re-auth
+                        SppPacketV2.resetSequence();
+                        await cmdQueue.enqueue(writeChar, SppPacketV2.buildSessionConfigRequest());
+                        const ltkStr = localStorage.getItem('be_ltk');
+                        const ltk = new Uint8Array(16);
+                        for (let i = 0; i < 16; i++)
+                            ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+                        const reAuth = new SppAuthProtocol(ltk);
+                        const { packet: pnPacket } = reAuth.buildPhoneNonce();
+                        const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
+                        await cmdQueue.enqueue(writeChar, sppPn);
+                        // Wait for WatchNonce via authResolve
+                        const wnPayload = await new Promise(r => {
+                            const t = setTimeout(() => { if (authResolve === r)
+                                authResolve = null; r(null); }, 10000);
+                            authResolve = (p) => { clearTimeout(t); authResolve = null; r(p); };
+                        });
+                        if (!wnPayload)
+                            break;
+                        const step3 = await reAuth.processWatchNonce(wnPayload);
+                        if (!step3)
+                            break;
+                        const sppA3 = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, step3.authStep3Packet);
+                        await cmdQueue.enqueue(writeChar, sppA3);
+                        const authPayload = await new Promise(r => {
+                            const t = setTimeout(() => { if (authResolve === r)
+                                authResolve = null; r(null); }, 10000);
+                            authResolve = (p) => { clearTimeout(t); authResolve = null; r(p); };
+                        });
+                        if (!authPayload || !reAuth.processAuthResponse(authPayload))
+                            break;
+                        authProtocol = reAuth;
+                        log('info', `🎉 Re-auth success, resuming at #${idx + 2}...`);
+                    }
+                    catch (ea) {
+                        log('error', `Reconnect+reauth failed: ${ea.message}`);
+                        break;
+                    }
+                }
+                else {
+                    break;
+                }
+            }
+        }
+        log('info', `✅ TEST 15: ${sentOk} OK, ${sentFail} FAIL`);
+        if (sentFail === 0 && sentOk === CMD_LIST.length) {
+            log('info', `🎉 All 27 commands ACKed. Band pairing complete!`);
+            localStorage.setItem('be_paired', 'true');
+        }
+        for (let i = 0; i < 30; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            log('info', `  [${i + 1}s] connected=${gattServer?.connected ?? false}`);
+            if (!gattServer?.connected)
+                break;
+        }
+    }
+    log('info', `========== ${tname} END ==========`);
 }
 // ── UI ──
 function showWizard() { wizard.style.display = ''; mainUI.style.display = 'none'; }
@@ -210,8 +604,12 @@ btnSaveKey.addEventListener('click', () => {
         return;
     }
     localStorage.setItem('be_ltk', ltkInput.value.toLowerCase());
+    // Yeni key girildi -> pairing flag'ini sifirla (yeni pairing gerekecek)
+    localStorage.removeItem('be_paired');
+    console.log(`[Key] Yeni LTK kaydedildi: ${ltkInput.value.toLowerCase()}`);
+    console.log(`[Key] be_paired silindi - yeni pairing bekleniyor`);
     wizardStatus.className = 'wizard-status success';
-    wizardStatus.innerHTML = '✅ Key saved';
+    wizardStatus.innerHTML = `✅ Key saved (${ltkInput.value.length} chars)`;
     wizardStatus.style.display = 'block';
     setTimeout(() => { showMainUI(); }, 1500);
 });
@@ -237,7 +635,7 @@ $('btn-settings').addEventListener('click', () => {
     modal.addEventListener('click', (e) => { if (e.target === modal)
         modal.remove(); });
 });
-// ── MAIN CONNECT: Full auth flow ──
+// ── MAIN CONNECT ──
 async function startConnect() {
     try {
         setStatus('Pairing…');
@@ -249,65 +647,65 @@ async function startConnect() {
             filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
             optionalServices: [],
         }), 30000, 'requestDevice');
+        selectedDevice = device;
         log('info', `Device: ${device.name ?? '?'}`);
         if (!device.gatt)
             throw new Error('gatt null');
+        device.addEventListener('gattserverdisconnected', (ev) => {
+            log('warn', `❗ DISCONNECT: gattserverdisconnected event`);
+            log('warn', `❗ Device: ${device.name}`);
+            setStatus('Disconnected!', false);
+            setButtons(false);
+            // Stale referanslari temizle - writeBLE eski char'a yazmasin
+            gattServer = null;
+            writeChar = null;
+            notifyChar = null;
+        });
+        log('info', '→ gattserverdisconnected listener registered');
         gattServer = await withTimeout(device.gatt.connect(), 15000, 'connect');
         log('info', 'GATT connected');
-        // Find characteristics more robustly
-        let foundW = null;
-        let foundN = null;
-        try {
-            const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
-            const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
-            log('info', `FE95 chars (${chars.length}):`);
-            for (const c of chars)
-                log('info', `  ${c.uuid} (R=${!!c.properties.read} W=${!!c.properties.write} WW=${!!c.properties.writeWithoutResponse} N=${!!c.properties.notify})`);
-            const matchUuid = (c, short) => c.uuid.replace(/-/g, '').toLowerCase().includes(short.toLowerCase());
-            foundN = chars.find(c => c.properties.notify && matchUuid(c, '005e')) ?? null;
-            foundW = chars.find(c => (c.properties.write || c.properties.writeWithoutResponse) && matchUuid(c, '005f')) ?? null;
-            if (!foundN || !foundW) {
-                foundW = foundW ?? chars.find(c => c.properties.write || c.properties.writeWithoutResponse) ?? null;
-                foundN = foundN ?? chars.find(c => c.properties.notify) ?? null;
-            }
-        }
-        catch (e) {
-            log('warn', `FE95 failed: ${e.message}, scanning all...`);
-            const allSvcs = await withTimeout(gattServer.getPrimaryServices(), 10000, 'all-svcs');
-            for (const svc of allSvcs) {
-                try {
-                    const sc = await withTimeout(svc.getCharacteristics(), 3000, svc.uuid);
-                    foundW = foundW ?? sc.find(c => c.properties.writeWithoutResponse || c.properties.write) ?? null;
-                    foundN = foundN ?? sc.find(c => c.properties.notify) ?? null;
-                }
-                catch { }
-            }
-        }
-        if (!foundW || !foundN)
-            throw new Error('No writable/notifiable char pair found');
-        writeChar = foundW;
-        notifyChar = foundN;
+        const service = await withTimeout(gattServer.getPrimaryService('0000fe95-0000-1000-8000-00805f9b34fb'), 10000, 'fe95');
+        const chars = await withTimeout(service.getCharacteristics(), 5000, 'fe95-chars');
+        const charStr = chars.map((c, i) => {
+            if (!c || !c.properties)
+                return `[${i}] undefined`;
+            return `[${i}] ${c.uuid} R=${!!c.properties.read} W=${!!c.properties.write} WW=${!!c.properties.writeWithoutResponse} N=${!!c.properties.notify}`;
+        }).join('\n');
+        log('info', `FE95 characteristics (${chars.length}):\n${charStr}`);
+        const char5e = chars.find(c => c.uuid.toLowerCase().includes('005e'));
+        const char5f = chars.find(c => c.uuid.toLowerCase().includes('005f'));
+        if (!char5e || !char5f)
+            throw new Error('005E/005F not found');
+        writeChar = char5f;
+        notifyChar = char5e;
         log('info', `W=${writeChar.uuid} N=${notifyChar.uuid}`);
+        log('info', `W-props: R=${!!writeChar.properties.read} W=${!!writeChar.properties.write} WW=${!!writeChar.properties.writeWithoutResponse} N=${!!writeChar.properties.notify}`);
         notifyChar.removeEventListener('characteristicvaluechanged', onBleNotify);
         notifyChar.addEventListener('characteristicvaluechanged', onBleNotify);
         await withTimeout(notifyChar.startNotifications(), 5000, 'notif');
         // ═══ 1. SESSION CONFIG ═══
         log('info', '═══ 1. SESSION CONFIG ═══');
         SppPacketV2.resetSequence();
-        await writeBLE(SppPacketV2.buildSessionConfigRequest());
-        setStatus('Session Config sent…');
+        const scPacket = SppPacketV2.buildSessionConfigRequest();
+        log('info', `SessionConfig seq: ${scPacket[3]}, Internal counter after: 1`);
+        log('sent', `SessionConfig SPPv2 (${scPacket.length}B): ${hexLog(scPacket)}`);
+        await writeBLE(scPacket);
+        setStatus('Waiting for Session Config…');
         await drainNotifications(15000);
         await new Promise(r => setTimeout(r, 500));
         // ═══ 2. AUTH: PHONE NONCE (CMD_NONCE=26) ═══
         log('info', '═══ 2. AUTH PHONE NONCE ═══');
         const ltkStr = localStorage.getItem('be_ltk');
+        log('info', `🔑 LTK from localStorage: ${ltkStr} (${ltkStr.length} chars)`);
         const ltk = new Uint8Array(16);
         for (let i = 0; i < 16; i++)
             ltk[i] = parseInt(ltkStr.substring(i * 2, i * 2 + 2), 16);
+        log('info', `🔑 LTK hex: ${toHex(ltk)}`);
         authProtocol = new SppAuthProtocol(ltk);
         const { nonce: pNonce, packet: pnPacket } = authProtocol.buildPhoneNonce();
         log('info', `PhoneNonce: ${toHex(pNonce)}`);
         const sppPn = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_PLAINTEXT, pnPacket);
+        log('info', `PhoneNonce seq: ${sppPn[3]}, Internal counter after: 2`);
         log('sent', `PhoneNonce DATA (${sppPn.length}B): ${hexLog(sppPn)}`);
         const wnPayload = await sendAndWaitAuth(sppPn, 10000, 'WatchNonce');
         if (!wnPayload) {
@@ -339,26 +737,12 @@ async function startConnect() {
         const result = authProtocol.processAuthResponse(authPayload);
         if (result) {
             log('info', '🎉  AUTH SUCCESS!');
+            // İlk başarılı pairing tamamlandı, sonraki reconnect'lerde kullan
+            localStorage.setItem('be_paired', 'true');
             setStatus('✓ Authenticated', true);
             setButtons(true);
-            log("info", "═══ POST-AUTH: ENCRYPTED DEVICE INFO ═══");
-            try {
-                const cmd = new Uint8Array([0x08, 0x02, 0x10, 0x02]);
-                log("info", "DeviceInfo cmd: " + toHex(cmd));
-                const enc = authProtocol.encryptV2(cmd);
-                log("info", "Encrypted: " + toHex(enc));
-                const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-                log("sent", "SPPv2 (" + spp.length + "B): " + hexLog(spp));
-                await writeBLE(spp);
-                await new Promise(r => setTimeout(r, 5000));
-                log("info", "Queue: " + notifyQueue.length + ", SPP buf: " + sppBuffer.length + "B");
-                for (let i = 0; i < notifyQueue.length; i++) {
-                    log("recv", "Q[" + i + "](" + notifyQueue[i].length + "B): " + hexLog(notifyQueue[i]));
-                }
-            }
-            catch (be) {
-                log("error", "Post: " + (be?.message ?? be));
-            }
+            // ═══ RUN SELECTED TEST ═══
+            await runPostAuth();
         }
         else {
             log('error', '✗  AUTH FAILED');
@@ -391,4 +775,29 @@ else {
     showWizard();
     ltkInput.focus();
 }
-btnConnect.onclick = startConnect;
+// GB MOD icin ayri baglanti butonu
+btnConnect.onclick = async () => {
+    if (selectedTest === 14) {
+        const gbHandle = new GBDeviceHandle();
+        try {
+            btnConnect.disabled = true;
+            log('info', '═══ GB MOD START ═══');
+            const dev = await navigator.bluetooth.requestDevice({
+                filters: [{ services: ['0000fe95-0000-1000-8000-00805f9b34fb'] }, { namePrefix: 'Xiaomi Smart Band' }],
+                optionalServices: [],
+            });
+            await gbFullFlow(gbHandle, dev, setStatus);
+            // GB MOD bittikten sonra paired flag set
+            localStorage.setItem('be_paired', 'true');
+        }
+        catch (e) {
+            log('error', `GB MOD error: ${e?.message ?? e}`);
+        }
+        btnConnect.disabled = false;
+    }
+    else {
+        await startConnect();
+    }
+};
+initTestSelector();
+// toHex imported from SppAuthMessages

@@ -11,7 +11,7 @@
 import { log, hex as hexLog } from './logger.js';
 import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode, SessionConfigOpcode } from '../../src/SppPacketV2.js';
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
-import { toHex } from '../../src/SppAuthMessages.js';
+import { toHex, bytesToHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock } from '../../src/SppSystemMessages.js';
 
 // ── GBDevice.State (GB AbstractBTLESingleDeviceSupport) ──
@@ -331,9 +331,10 @@ async function sendCommand(handle: GBDeviceHandle, type: number, subtype: number
   } else {
     // GB: encodePacket(ProtobufCommand, payload) -> SEND_ENCRYPTED
     const encrypted = await handle.authProtocol!.encryptV2(cmdBytes);
-    log('info', `[GB] ${desc} encrypted (${encrypted.length}B): ${toHex(encrypted)}`);
+    console.log(`[HEX-DEBUG] plaintext (${cmdBytes.length}B): ${bytesToHex(cmdBytes)}`);
+    console.log(`[HEX-DEBUG] encrypted (${encrypted.length}B): ${bytesToHex(encrypted)}`);
     const spp = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encrypted);
-    log('sent', `[GB] ${desc} SPPv2 SEND_ENCRYPTED seq=${spp[3]} (${spp.length}B): ${toHex(spp)}`);
+    console.log(`[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
     // GB: WriteAction -> latch.await() -> callback bekleme
     // Web Bluetooth: writeValueWithoutResponse, pacing ile flood önle
     await writeWithPacing(handle, spp);
@@ -488,11 +489,11 @@ async function onAuthSuccess(handle: GBDeviceHandle) {
   // 2. systemService.setCurrentTime() (Support.java:410-412)
   //   XiaomiSystemService.java:316-353 -> Command{type=2, subtype=3, system{clock{...}}}
   const clockBuf = encodeCommandClock();
-  log('info', `[GB] Clock plaintext (${clockBuf.length}B): ${toHex(clockBuf)}`);
+  console.log(`[HEX-DEBUG] plaintext (${clockBuf.length}B): ${bytesToHex(clockBuf)}`);
   const encClock = await handle.authProtocol!.encryptV2(clockBuf);
-  log('info', `[GB] Clock encrypted (${encClock.length}B): ${toHex(encClock)}`);
+  console.log(`[HEX-DEBUG] encrypted (${encClock.length}B): ${bytesToHex(encClock)}`);
   const sppClock = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
-  log('send', `[GB] Clock SPPv2 SEND_ENCRYPTED seq=${sppClock[3]} (${sppClock.length}B): ${toHex(sppClock)}`);
+  console.log(`[HEX-DEBUG] SPP frame (${sppClock.length}B): ${bytesToHex(sppClock)}`);
   await writeRaw(handle, sppClock);
 
   // 3. mServiceMap.values().forEach(service.initialize()) (Support.java:414-416)

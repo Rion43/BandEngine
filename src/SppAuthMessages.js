@@ -2,6 +2,9 @@
 // Wire format based on XiaomiAuthService.java
 import { toHex } from './SppAuthCrypto.js';
 export { toHex };
+export function bytesToHex(bytes) {
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
+}
 // ── Protobuf varint helpers ──
 function encodeTag(fieldNum, wireType) {
     return encodeVarint((fieldNum << 3) | wireType);
@@ -167,15 +170,13 @@ export function decodeWatchNonce(payload) {
 export function encodeAuthDeviceInfo(apiLevel, phoneName, region) {
     const nameBytes = new TextEncoder().encode(phoneName);
     const regionBytes = new TextEncoder().encode(region);
-    // phoneApiLevel as float32 (fixed32)
-    const apiLevelBytes = new Uint8Array(4);
-    new DataView(apiLevelBytes.buffer).setFloat32(0, apiLevel, true);
+    // GB XiaomiAuthService.java:220: .setPhoneApiLevel(Build.VERSION.SDK_INT) → uint32 → varint (wire type 0), NOT fixed32
     const fields = [
-        varintField(1, 0), // unknown1 = 0
-        fixed32Field(2, apiLevelBytes), // phoneApiLevel
-        lenDelimited(3, nameBytes), // phoneName
-        varintField(4, 224), // unknown3 = 224
-        lenDelimited(5, regionBytes), // region
+        varintField(1, 0), // unknown1 = 0 (uint32)
+        varintField(2, apiLevel), // phoneApiLevel (uint32 → varint, GB birebir)
+        lenDelimited(3, nameBytes), // phoneName (string)
+        varintField(4, 224), // unknown3 = 224 (uint32)
+        lenDelimited(5, regionBytes), // region (string)
     ];
     const totalLen = fields.reduce((s, f) => s + f.length, 0);
     const out = new Uint8Array(totalLen);

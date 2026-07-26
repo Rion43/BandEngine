@@ -3,7 +3,7 @@ import { log, hex as hexLog } from './logger.js';
 import { SppPacketV2, SppPacketType, SppChannel, SppDataOpcode } from '../../src/SppPacketV2.js';
 import { SppAuthProtocol } from '../../src/SppAuthProtocol.js';
 import { SppAckTracker } from '../../src/SppAckTracker.js';
-import { toHex } from '../../src/SppAuthMessages.js';
+import { toHex, bytesToHex } from '../../src/SppAuthMessages.js';
 import { encodeCommandClock, encodeCommandDeviceInfo, encodeCommandBattery, encodeCommandRaw } from '../../src/SppSystemMessages.js';
 import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
@@ -236,13 +236,13 @@ async function drainNotifications(initialTimeout: number) {
 
 async function sendEncrypted(cmd: Uint8Array, label: string): Promise<void> {
   // 1. Raw protobuf plaintext
-  log('info', `[${label}] plaintext (${cmd.length}B): ${hexLog(cmd)}`);
+  console.log(`[HEX-DEBUG] plaintext (${cmd.length}B): ${bytesToHex(cmd)}`);
   // 2. Encrypted payload (AES-CTR, encKey=IV=key)
   const enc = await authProtocol!.encryptV2(cmd);
-  log('info', `[${label}] encrypted (${enc.length}B): ${hexLog(enc)}`);
+  console.log(`[HEX-DEBUG] encrypted (${enc.length}B): ${bytesToHex(enc)}`);
   // 3. SPP frame with opcode
   const spp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, enc);
-  log('sent', `[${label}] SPPv2 SEND_ENCRYPTED seq=${spp[3]} (${spp.length}B): ${hexLog(spp)}`);
+  console.log(`[HEX-DEBUG] SPP frame (${spp.length}B): ${bytesToHex(spp)}`);
   await writeBLE(spp);
 }
 
@@ -458,8 +458,11 @@ async function runPostAuth(): Promise<void> {
     let sentFail = 0;
     for (let idx = 0; idx < CMD_LIST.length; idx++) {
       const rawBuf = encodeCommandRaw(CMD_LIST[idx].type, CMD_LIST[idx].subtype);
+      console.log(`[HEX-DEBUG] plaintext (${rawBuf.length}B): ${bytesToHex(rawBuf)}`);
       const encBuf = await authProtocol!.encryptV2(rawBuf);
+      console.log(`[HEX-DEBUG] encrypted (${encBuf.length}B): ${bytesToHex(encBuf)}`);
       const sppBuf = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, encBuf);
+      console.log(`[HEX-DEBUG] SPP frame (${sppBuf.length}B): ${bytesToHex(sppBuf)}`);
       const label = `#${idx + 1}/${CMD_LIST.length} ${CMD_LIST[idx].desc}`;
       log('sent', `[${label}] seq=${sppBuf[3]}`);
       try {

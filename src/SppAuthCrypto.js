@@ -1,9 +1,8 @@
 // SppAuthCrypto — Gadgetbridge-style auth key derivation
-function ab(u8) { return u8.slice().buffer.slice(0); }
 export const toHex = (bytes) => Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 async function hmac(key, data) {
-    const k = await crypto.subtle.importKey('raw', ab(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    return new Uint8Array(await crypto.subtle.sign('HMAC', k, ab(data)));
+    const k = await crypto.subtle.importKey('raw', key.buffer.slice(0), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    return new Uint8Array(await crypto.subtle.sign('HMAC', k, data.buffer.slice(0)));
 }
 const MIWEAR_AUTH = new TextEncoder().encode('miwear-auth');
 export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
@@ -25,32 +24,20 @@ export async function computeAuthStep3Hmac(secretKey, phoneNonce, watchNonce) {
     return out;
 }
 export { aesCcmEncrypt } from './aes-ccm.js';
-import { AES_ECB } from "asmcrypto.js/dist_es8/aes/ecb.js";
-export function aesCtrEncrypt(data, key) {
-    // Manual CTR mode: encrypt counter block, XOR with data
-    // Gadgetbridge: Cipher("AES/CTR/NoPadding"), key=key, iv=key
-    const blockSize = 16;
-    const counter = new Uint8Array(blockSize);
-    counter.set(key, 0); // initial counter = key
-    const result = new Uint8Array(data.length);
-    const ecb = new AES_ECB(key, false);
-    const encryptedCounter = new Uint8Array(blockSize);
-    for (let offset = 0; offset < data.length; offset += blockSize) {
-        const enc = AES_ECB.encrypt(counter, key);
-        encryptedCounter.set(enc, 0);
-        const chunkEnd = Math.min(offset + blockSize, data.length);
-        for (let i = offset; i < chunkEnd; i++) {
-            result[i] = data[i] ^ encryptedCounter[i - offset];
-        }
-        // increment counter (big-endian)
-        for (let i = blockSize - 1; i >= 0; i--) {
-            if (++counter[i] !== 0)
-                break;
-        }
-    }
-    return result;
+// Web Crypto API AES-CTR — Java AES/CTR/NoPadding ile birebir
+// Gadgetbridge ctrCrypt: Cipher.getInstance("AES/CTR/NoPadding"), key=iv
+// Web Crypto: counter=key(16B), length=128 -> full 128-bit initial counter
+// counter block = key (IvParameterSpec ile ayni), big-endian counter increment
+export async function aesCtrEncrypt(data, key) {
+    const k = await crypto.subtle.importKey('raw', key.slice().buffer, { name: 'AES-CTR' }, false, ['encrypt']);
+    const ct = await crypto.subtle.encrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer);
+    return new Uint8Array(ct);
 }
-export const aesCtrDecrypt = aesCtrEncrypt;
+export async function aesCtrDecrypt(data, key) {
+    const k = await crypto.subtle.importKey('raw', key.slice().buffer, { name: 'AES-CTR' }, false, ['decrypt']);
+    const pt = await crypto.subtle.decrypt({ name: 'AES-CTR', counter: key.slice(), length: 128 }, k, data.slice().buffer);
+    return new Uint8Array(pt);
+}
 export async function verifyWatchHmac(decKey, watchNonce, phoneNonce, receivedHmac) {
     const buf = new Uint8Array(watchNonce.length + phoneNonce.length);
     buf.set(watchNonce);

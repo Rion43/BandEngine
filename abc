@@ -1,0 +1,188 @@
+A TEST
+Selected: Normal
+[04:26:04.381] 🧪 Selected: TEST A: Plaintext Protobuf (SEND_PLAINTEXT)
+[04:26:07.263] ═══ FULL AUTH FLOW ═══
+[04:26:08.079] Device: Xiaomi Smart Band 9 0A4B
+[04:26:08.082] → gattserverdisconnected listener registered
+[04:26:08.110] GATT connected
+[04:26:08.126] FE95 characteristics (3): [0] 0050 R=true W=false WW=false N=false [1] 005E R=false W=false WW=true N=true [2] 005F R=false W=false WW=true N=true
+[04:26:08.127] W=005F N=005E
+[04:26:08.128] W-props: R=false W=false WW=true N=true
+[04:26:08.131] ═══ 1. SESSION CONFIG ═══
+[04:26:08.132] SessionConfig seq: 0, Internal counter after: 1
+[04:26:08.133] SessionConfig SPPv2 (30B): (30B) a5 a5 02 00 16 00 1d 4d 01 01 03 00 01 00 00 02 02 00 00 fc 03 02 00 20 00 04 02 00 10 27
+[04:26:08.322] SPP SESSION_CONFIG seq=0 len=22
+[04:26:08.324] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:26:08.326] 📋 Session Config:
+[04:26:08.328] ✅ VERSION: 2.0.97
+[04:26:08.329] maxPacketSize: 32768
+[04:26:08.330] txWin: 3
+[04:26:08.331] sendTimeout: 16000ms
+[04:26:08.331] ✅ Version OK. Auth ready to start.
+[04:26:08.333] Notification (30B) HEX: (30B) a5 a5 02 00 16 00 5d 3d 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:26:08.334] SPP SESSION_CONFIG seq=0 len=22
+[04:26:08.335] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:26:08.336] 📋 Session Config:
+[04:26:08.336] ✅ VERSION: 2.0.97
+[04:26:08.337] maxPacketSize: 32768
+[04:26:08.337] txWin: 3
+[04:26:08.338] sendTimeout: 16000ms
+[04:26:08.338] ✅ Version OK. Auth ready to start.
+[04:26:10.542] ═══ 2. AUTH PHONE NONCE ═══
+[04:26:10.549] 🔑 LTK from localStorage: b9aae533f8ff83ebf97f5bafaa12008b (32 chars)
+[04:26:10.554] 🔑 LTK hex: b9 aa e5 33 f8 ff 83 eb f9 7f 5b af aa 12 00 8b
+[04:26:10.558] PhoneNonce: ef b9 bd b9 7a f2 f9 95 95 da 2e 24 de 61 5b f0
+[04:26:10.559] PhoneNonce seq: 0, Internal counter after: 2
+[04:26:10.560] PhoneNonce DATA (37B): (37B) a5 a5 03 00 1d 00 35 98 01 01 08 01 10 1a 1a 15 f2 01 12 0a 10 ef b9 bd b9 7a f2 f9 95 95 da 2e 24 de 61 5b f0
+[04:26:10.593] SPP ACK seq=0 len=0
+[04:26:10.594] ACK seq=0
+[04:26:10.594] [Queue] ACK seq=0 (unexpected)
+[04:26:10.595] SPP DATA seq=0 len=61
+[04:26:10.596] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(61B)
+[04:26:10.597] WatchNonce raw (61B): 08 01 10 1a 1a 37 fa 01 34 0a 10 71 12 33 01 c8 64 1f 4a 77 2a c0 30 33 f4 ac 02 12 20 23 fe 87 50 83 1c 25 7a da d6 42 7c d8 e7 50 60 de 20 8c be 25 98 45 42 65 a2 70 62 8a 17 a2 ca
+[04:26:10.616] ═══ 3. AUTH STEP 3 ═══
+[04:26:10.616] AuthStep3 DATA (82B): (82B) a5 a5 03 01 4a 00 ef fc 01 01 08 01 10 1b 1a 42 82 02 3f 0a 20 66 b5 5b a2 05 a3 a7 c5 41 fd 5c c9 cb 6d d8 f8 4f e4 cc cb 2d bb 85 22 1c 03 d2 5f 37 b4 92 b2 12 1b 93 16 cc f5 1d e1 23 2c 3a … (82 total)
+[04:26:10.650] SPP ACK seq=1 len=0
+[04:26:10.651] ACK seq=1
+[04:26:10.652] [Queue] ACK seq=1 (unexpected)
+[04:26:10.652] SPP DATA seq=1 len=17
+[04:26:10.653] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(17B)
+[04:26:10.653] Auth result raw (17B): 08 01 10 1b 1a 0b 8a 02 08 08 01 10 bd fe bf 9f 01
+[04:26:10.654] 🎉 AUTH SUCCESS!
+[04:26:10.658] ========== TEST A: Plaintext Protobuf (SEND_PLAINTEXT) START ==========
+[04:26:10.659] ═══ TEST A: Clock encrypted + SEND_PLAINTEXT opcode ═══
+[04:26:10.686] [HEX-DEBUG] plaintext (53B): 08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 1a 12 09 08 04 10 1a 18 0a 20 93 05 1a 15 08 18 10 00 1a 0f 45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c 20 00
+[04:26:10.686] [HEX-DEBUG] encrypted (53B): 0a 90 cb e0 95 67 75 2a 67 55 81 d9 29 f0 a6 34 9e 7f b5 c6 c4 54 31 b4 26 4b d1 33 89 01 9a 6e e1 39 c6 b8 c5 c4 ed 74 b1 9b 72 c2 eb 6a b0 d2 b7 5d ce af de
+[04:26:10.687] [HEX-DEBUG] SPP frame (63B): a5 a5 03 02 37 00 82 a1 01 01 0a 90 cb e0 95 67 75 2a 67 55 81 d9 29 f0 a6 34 9e 7f b5 c6 c4 54 31 b4 26 4b d1 33 89 01 9a 6e e1 39 c6 b8 c5 c4 ed 74 b1 9b 72 c2 eb 6a b0 d2 b7 5d ce af de
+[04:26:10.738] ❗ DISCONNECT: gattserverdisconnected event
+[04:26:10.739] ❗ Device: Xiaomi Smart Band 9 0A4B
+[04:26:11.691] [1s] connected=false queue=3 sppBuf=0
+[04:26:11.694] ❌ Connection LOST at 1s (1004ms after auth)
+[04:26:11.697] ========== TEST A: Plaintext Protobuf (SEND_PLAINTEXT) END ==========
+[04:26:11.698] ═══ FULL AUTH FLOW DONE ═══
+
+B TEST
+
+Selected: Normal
+[04:27:15.431] 🧪 Selected: TEST B: decKey ile şifrele
+[04:27:17.538] ═══ FULL AUTH FLOW ═══
+[04:27:18.504] Device: Xiaomi Smart Band 9 0A4B
+[04:27:18.506] → gattserverdisconnected listener registered
+[04:27:19.160] GATT connected
+[04:27:19.384] FE95 characteristics (3): [0] 0050 R=true W=false WW=false N=false [1] 005E R=false W=false WW=true N=true [2] 005F R=false W=false WW=true N=true
+[04:27:19.386] W=005F N=005E
+[04:27:19.388] W-props: R=false W=false WW=true N=true
+[04:27:19.392] ═══ 1. SESSION CONFIG ═══
+[04:27:19.394] SessionConfig seq: 0, Internal counter after: 1
+[04:27:19.395] SessionConfig SPPv2 (30B): (30B) a5 a5 02 00 16 00 1d 4d 01 01 03 00 01 00 00 02 02 00 00 fc 03 02 00 20 00 04 02 00 10 27
+[04:27:19.565] SPP SESSION_CONFIG seq=0 len=22
+[04:27:19.567] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:27:19.569] 📋 Session Config:
+[04:27:19.570] ✅ VERSION: 2.0.97
+[04:27:19.571] maxPacketSize: 32768
+[04:27:19.572] txWin: 3
+[04:27:19.572] sendTimeout: 16000ms
+[04:27:19.573] ✅ Version OK. Auth ready to start.
+[04:27:19.576] Notification (30B) HEX: (30B) a5 a5 02 00 16 00 5d 3d 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:27:19.578] SPP SESSION_CONFIG seq=0 len=22
+[04:27:19.579] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:27:19.580] 📋 Session Config:
+[04:27:19.580] ✅ VERSION: 2.0.97
+[04:27:19.581] maxPacketSize: 32768
+[04:27:19.581] txWin: 3
+[04:27:19.581] sendTimeout: 16000ms
+[04:27:19.582] ✅ Version OK. Auth ready to start.
+[04:27:21.786] ═══ 2. AUTH PHONE NONCE ═══
+[04:27:21.787] 🔑 LTK from localStorage: b9aae533f8ff83ebf97f5bafaa12008b (32 chars)
+[04:27:21.790] 🔑 LTK hex: b9 aa e5 33 f8 ff 83 eb f9 7f 5b af aa 12 00 8b
+[04:27:21.796] PhoneNonce: cd 91 b1 01 56 6d cc cf ab 65 e5 75 1f 3d 95 81
+[04:27:21.797] PhoneNonce seq: 0, Internal counter after: 2
+[04:27:21.798] PhoneNonce DATA (37B): (37B) a5 a5 03 00 1d 00 ae f1 01 01 08 01 10 1a 1a 15 f2 01 12 0a 10 cd 91 b1 01 56 6d cc cf ab 65 e5 75 1f 3d 95 81
+[04:27:21.841] SPP ACK seq=0 len=0
+[04:27:21.842] ACK seq=0
+[04:27:21.843] [Queue] ACK seq=0 (unexpected)
+[04:27:21.844] SPP DATA seq=0 len=61
+[04:27:21.845] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(61B)
+[04:27:21.846] WatchNonce raw (61B): 08 01 10 1a 1a 37 fa 01 34 0a 10 b0 d3 ee 66 be ed 21 0c d9 99 73 65 51 bb ad 4b 12 20 a1 ec bd 5e c4 e4 56 d8 7b ff 52 ed 58 e8 91 d5 22 69 87 45 f0 da d1 6f 62 62 62 f6 f5 54 75 9a
+[04:27:21.862] ═══ 3. AUTH STEP 3 ═══
+[04:27:21.863] AuthStep3 DATA (82B): (82B) a5 a5 03 01 4a 00 39 29 01 01 08 01 10 1b 1a 42 82 02 3f 0a 20 e5 5c 90 5f 19 9a bf 23 cf 81 f7 63 78 99 d7 5c ca 51 cf 7a 92 6c 02 99 83 51 04 f0 0a 50 56 6a 12 1b f5 40 3e 26 03 4b 2e 08 f8 … (82 total)
+[04:27:21.900] SPP ACK seq=1 len=0
+[04:27:21.902] ACK seq=1
+[04:27:21.903] [Queue] ACK seq=1 (unexpected)
+[04:27:21.903] SPP DATA seq=1 len=19
+[04:27:21.904] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(19B)
+[04:27:21.905] Auth result raw (19B): 08 01 10 1b 1a 0d 8a 02 0a 08 01 10 bd fe bf 9f 01 18 3e
+[04:27:21.906] 🎉 AUTH SUCCESS!
+[04:27:21.910] ========== TEST B: decKey ile sifrele START ==========
+[04:27:21.912] ═══ TEST B: decKey ile AES-CTR ═══
+[04:27:21.925] [HEX-DEBUG] plaintext (53B): 08 02 10 03 22 2f 22 2d 0a 07 08 ea 0f 10 07 18 1a 12 09 08 04 10 1b 18 15 20 90 07 1a 15 08 18 10 00 1a 0f 45 75 72 6f 70 65 2f 49 73 74 61 6e 62 75 6c 20 00
+[04:27:21.926] [HEX-DEBUG] decKey encrypt (53B): d5 44 93 79 a5 97 30 8e d9 f3 5b a9 c5 3f 5c de db 9c b6 04 60 db 1a 58 4a ec ec 77 d6 56 16 0e f6 66 e5 3d 88 de dd 93 85 55 ab 42 d2 f7 f3 2a 37 e9 9e ea 3c
+[04:27:21.926] [HEX-DEBUG] SPP frame (63B): a5 a5 03 02 37 00 c9 4f 01 02 d5 44 93 79 a5 97 30 8e d9 f3 5b a9 c5 3f 5c de db 9c b6 04 60 db 1a 58 4a ec ec 77 d6 56 16 0e f6 66 e5 3d 88 de dd 93 85 55 ab 42 d2 f7 f3 2a 37 e9 9e ea 3c
+[04:27:21.966] ❗ DISCONNECT: gattserverdisconnected event
+[04:27:21.967] ❗ Device: Xiaomi Smart Band 9 0A4B
+[04:27:22.931] [1s] connected=false queue=3 sppBuf=0
+[04:27:22.935] ❌ Connection LOST at 1s (1005ms after auth)
+[04:27:22.937] ========== TEST B: decKey ile sifrele END ==========
+[04:27:22.939] ═══ FULL AUTH FLOW DONE ═══
+
+C TEST
+
+Selected: TEST C: AES-CCM + V1 char
+[04:27:58.370] ═══ FULL AUTH FLOW ═══
+[04:27:59.726] Device: Xiaomi Smart Band 9 0A4B
+[04:27:59.729] → gattserverdisconnected listener registered
+[04:28:00.380] GATT connected
+[04:28:00.603] FE95 characteristics (3): [0] 0050 R=true W=false WW=false N=false [1] 005E R=false W=false WW=true N=true [2] 005F R=false W=false WW=true N=true
+[04:28:00.607] W=005F N=005E
+[04:28:00.608] W-props: R=false W=false WW=true N=true
+[04:28:00.616] ═══ 1. SESSION CONFIG ═══
+[04:28:00.617] SessionConfig seq: 0, Internal counter after: 1
+[04:28:00.618] SessionConfig SPPv2 (30B): (30B) a5 a5 02 00 16 00 1d 4d 01 01 03 00 01 00 00 02 02 00 00 fc 03 02 00 20 00 04 02 00 10 27
+[04:28:00.813] SPP SESSION_CONFIG seq=0 len=22
+[04:28:00.815] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:28:00.817] 📋 Session Config:
+[04:28:00.819] ✅ VERSION: 2.0.97
+[04:28:00.820] maxPacketSize: 32768
+[04:28:00.820] txWin: 3
+[04:28:00.821] sendTimeout: 16000ms
+[04:28:00.822] ✅ Version OK. Auth ready to start.
+[04:28:00.824] Notification (30B) HEX: (30B) a5 a5 02 00 16 00 5d 3d 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:28:00.825] SPP SESSION_CONFIG seq=0 len=22
+[04:28:00.826] SESSION_CONFIG raw: (22B) 02 01 03 00 02 00 61 02 02 00 00 80 03 02 00 03 00 04 02 00 80 3e
+[04:28:00.827] 📋 Session Config:
+[04:28:00.827] ✅ VERSION: 2.0.97
+[04:28:00.828] maxPacketSize: 32768
+[04:28:00.828] txWin: 3
+[04:28:00.829] sendTimeout: 16000ms
+[04:28:00.829] ✅ Version OK. Auth ready to start.
+[04:28:03.033] ═══ 2. AUTH PHONE NONCE ═══
+[04:28:03.035] 🔑 LTK from localStorage: b9aae533f8ff83ebf97f5bafaa12008b (32 chars)
+[04:28:03.038] 🔑 LTK hex: b9 aa e5 33 f8 ff 83 eb f9 7f 5b af aa 12 00 8b
+[04:28:03.043] PhoneNonce: e2 d4 59 66 63 94 41 eb b7 d3 4f e0 e3 10 97 06
+[04:28:03.045] PhoneNonce seq: 0, Internal counter after: 2
+[04:28:03.046] PhoneNonce DATA (37B): (37B) a5 a5 03 00 1d 00 6a ff 01 01 08 01 10 1a 1a 15 f2 01 12 0a 10 e2 d4 59 66 63 94 41 eb b7 d3 4f e0 e3 10 97 06
+[04:28:03.120] SPP ACK seq=0 len=0
+[04:28:03.122] ACK seq=0
+[04:28:03.124] [Queue] ACK seq=0 (unexpected)
+[04:28:03.128] SPP DATA seq=0 len=61
+[04:28:03.129] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(61B)
+[04:28:03.131] WatchNonce raw (61B): 08 01 10 1a 1a 37 fa 01 34 0a 10 9d 96 e4 01 b8 61 a3 5f cc ab 26 6d 4c 2c cd 27 12 20 69 6e c6 84 21 b7 70 ea a7 b0 1d 44 3e d4 9c e9 5b 99 f2 22 b3 07 60 dc 8e 11 02 17 de f6 c3 c5
+[04:28:03.149] ═══ 3. AUTH STEP 3 ═══
+[04:28:03.150] AuthStep3 DATA (82B): (82B) a5 a5 03 01 4a 00 81 eb 01 01 08 01 10 1b 1a 42 82 02 3f 0a 20 64 66 0b 76 7b f0 6c 38 6b 0b 7b 77 a4 37 93 bb 6b be 8f c8 5b 19 e9 33 76 cb b0 db bb 6e 71 2b 12 1b d6 df a6 b6 fe e6 55 1a 9e … (82 total)
+[04:28:03.195] SPP ACK seq=1 len=0
+[04:28:03.196] ACK seq=1
+[04:28:03.197] [Queue] ACK seq=1 (unexpected)
+[04:28:03.198] SPP DATA seq=1 len=17
+[04:28:03.199] DATA ch=PROTOBUF_COMMAND op=SEND_PLAINTEXT payload(17B)
+[04:28:03.200] Auth result raw (17B): 08 01 10 1b 1a 0b 8a 02 08 08 01 10 bd fe bf 9f 01
+[04:28:03.201] 🎉 AUTH SUCCESS!
+[04:28:03.207] ========== TEST C: AES-CCM V1 style START ==========
+[04:28:03.208] ═══ TEST C: AES-CCM V1 style ═══
+[04:28:03.217] [HEX-DEBUG] CCM cipher (57B): 7b cf 8d 5f 6a ec ed fb 23 3f 0d d0 9f b1 8f 48 32 ea f7 db b5 cf 82 6d 41 5a c9 22 12 53 70 f3 97 18 57 87 d7 ac a0 70 36 f6 cb 15 9e 11 8f ab 7e 3f fa b4 49 44 9c 83 99
+[04:28:03.218] [HEX-DEBUG] SPP frame (67B): a5 a5 03 02 3b 00 43 61 01 02 7b cf 8d 5f 6a ec ed fb 23 3f 0d d0 9f b1 8f 48 32 ea f7 db b5 cf 82 6d 41 5a c9 22 12 53 70 f3 97 18 57 87 d7 ac a0 70 36 f6 cb 15 9e 11 8f ab 7e 3f fa b4 49 44 9c 83 99
+[04:28:03.264] ❗ DISCONNECT: gattserverdisconnected event
+[04:28:03.266] ❗ Device: Xiaomi Smart Band 9 0A4B
+[04:28:04.223] [1s] connected=false queue=3 sppBuf=0
+[04:28:04.226] ❌ Connection LOST at 1s (1004ms after auth)
+[04:28:04.227] ========== TEST C: AES-CCM V1 style END ==========
+[04:28:04.228] ═══ FULL AUTH FLOW DONE ═══

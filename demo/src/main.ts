@@ -284,6 +284,9 @@ const TEST_NAMES: Record<number, string> = {
   16: 'TEST A: Plaintext Protobuf (SEND_PLAINTEXT)',
   17: 'TEST B: decKey ile sifrele',
   18: 'TEST C: AES-CCM V1 style',
+  19: 'TEST D: Plaintext Protobuf (PROTOBUF_COMMAND)',
+  20: 'TEST E: Auth sonrasi idle 30s',
+  21: 'TEST F: Encrypted Clock AUTH ch',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -587,6 +590,35 @@ async function runPostAuth(): Promise<void> {
     const cSpp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, ccmCipher);
     log('info', `[HEX-DEBUG] SPP frame (${cSpp.length}B): ${bytesToHex(cSpp)}`);
     await writeBLE(cSpp);
+    await monitorConnection(30);
+  }
+
+  } else if (test === 19) {
+    // TEST D: Plaintext protobuf PROTOBUF_COMMAND kanalinda, SEND_PLAINTEXT
+    log('info', '═══ TEST D: Plaintext protobuf (PROTOBUF_COMMAND + SEND_PLAINTEXT) ═══');
+    const dPlain = encodeCommandClock();
+    log('info', `[HEX-DEBUG] plaintext (${dPlain.length}B): ${bytesToHex(dPlain)}`);
+    const dSpp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_PLAINTEXT, dPlain);
+    log('info', `[HEX-DEBUG] SPP frame (${dSpp.length}B): ${bytesToHex(dSpp)}`);
+    await writeBLE(dSpp);
+    await monitorConnection(30);
+
+  } else if (test === 20) {
+    // TEST E: Auth sonrasi hicbir sey gonderme, idle bekle
+    log('info', '═══ TEST E: Auth sonrasi idle 30s ═══');
+    log('info', 'Hiçbir paket gönderilmiyor. Band kendi kendine disconnect oluyor mu?');
+    await monitorConnection(30);
+
+  } else if (test === 21) {
+    // TEST F: Encrypted Clock AUTHENTICATION kanalinda, SEND_ENCRYPTED opcode
+    log('info', '═══ TEST F: Encrypted Clock AUTH ch (SEND_ENCRYPTED) ═══');
+    const fPlain = encodeCommandClock();
+    const fEnc = await authProtocol!.encryptV2(fPlain);
+    log('info', `[HEX-DEBUG] plaintext (${fPlain.length}B): ${bytesToHex(fPlain)}`);
+    log('info', `[HEX-DEBUG] encrypted (${fEnc.length}B): ${bytesToHex(fEnc)}`);
+    const fSpp = SppPacketV2.buildDataPacket(SppChannel.AUTHENTICATION, SppDataOpcode.SEND_ENCRYPTED, fEnc);
+    log('info', `[HEX-DEBUG] SPP frame (${fSpp.length}B): ${bytesToHex(fSpp)}`);
+    await writeBLE(fSpp);
     await monitorConnection(30);
   }
 

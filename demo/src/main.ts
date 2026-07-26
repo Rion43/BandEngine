@@ -47,7 +47,8 @@ function initTestSelector() {
         'TEST 4: DeviceInfo','TEST 5: DeviceState','TEST 6: slow 500ms',
         'TEST 7: slow 1000ms','TEST 8: Clock+DI','TEST 9: Clock+Bat',
         'TEST 10: Clock+State','TEST 11: Plaintext Clock','TEST 12: AES-CTR',
-        'TEST 13: Reconnect','TEST 14: GB MOD','TEST 15: GB onAuthSuccess (30+ komut)'];
+        'TEST 13: Reconnect','TEST 14: GB MOD','TEST 15: GB onAuthSuccess (30+ komut)',
+        'TEST A: Plaintext Protobuf (SEND_PLAINTEXT)','TEST B: decKey ile şifrele','TEST C: AES-CCM + V1 char'];
       log('info', `🧪 Selected: ${names[selectedTest] ?? '?'}`);
     });
   });
@@ -280,6 +281,9 @@ const TEST_NAMES: Record<number, string> = {
   13: 'TEST 13: Reconnect sonrasi Clock',
   14: 'GB MOD: full GB flow + autoReconnect (final)',
   15: 'TEST 15: GB onAuthSuccess birebir port (30+ komut)',
+  16: 'TEST A: Plaintext Protobuf (SEND_PLAINTEXT)',
+  17: 'TEST B: decKey ile sifrele',
+  18: 'TEST C: AES-CCM V1 style',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -535,6 +539,55 @@ async function runPostAuth(): Promise<void> {
       log('info', `  [${i + 1}s] connected=${gattServer?.connected ?? false}`);
       if (!gattServer?.connected) break;
     }
+
+  } else if (test === 16) {
+    // TEST A: Clock encrypted ama SEND_PLAINTEXT opcode ile
+    log('info', '═══ TEST A: Clock encrypted + SEND_PLAINTEXT opcode ═══');
+    const aPlain = encodeCommandClock();
+    const aEnc = await authProtocol!.encryptV2(aPlain);
+    // SPPv2: opcode=1 (SEND_PLAINTEXT) ama payload encrypted
+    const aPayload = new Uint8Array(2 + aEnc.length);
+    aPayload[0] = 1; // channel PROTOBUF_COMMAND
+    aPayload[1] = 1; // SEND_PLAINTEXT (!)
+    aPayload.set(aEnc, 2);
+    const aSpp = SppPacketV2.encode(SppPacketType.DATA, SppPacketV2.getNextSequence(), aPayload);
+    log('info', `[HEX-DEBUG] plaintext (${aPlain.length}B): ${bytesToHex(aPlain)}`);
+    log('info', `[HEX-DEBUG] encrypted (${aEnc.length}B): ${bytesToHex(aEnc)}`);
+    log('info', `[HEX-DEBUG] SPP frame (${aSpp.length}B): ${bytesToHex(aSpp)}`);
+    await writeBLE(aSpp);
+    await monitorConnection(30);
+
+  } else if (test === 17) {
+    // TEST B: encKey yerine decKey ile şifrele
+    log('info', '═══ TEST B: decKey ile AES-CTR ═══');
+    const bPlain = encodeCommandClock();
+    const bKeys = authProtocol!.keys!;
+    const { aesCtrEncrypt } = await import('../../src/SppAuthCrypto.js');
+    const bEnc = await aesCtrEncrypt(bPlain, bKeys.decKey); // ← decKey!
+    log('info', `[HEX-DEBUG] plaintext (${bPlain.length}B): ${bytesToHex(bPlain)}`);
+    log('info', `[HEX-DEBUG] decKey encrypt (${bEnc.length}B): ${bytesToHex(bEnc)}`);
+    const bSpp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, bEnc);
+    log('info', `[HEX-DEBUG] SPP frame (${bSpp.length}B): ${bytesToHex(bSpp)}`);
+    await writeBLE(bSpp);
+    await monitorConnection(30);
+
+  } else if (test === 18) {
+    // TEST C: AES-CCM (V1 style) + V1 karakteristikleri dene
+    log('info', '═══ TEST C: AES-CCM V1 style ═══');
+    const cPlain = encodeCommandClock();
+    const cKeys = authProtocol!.keys!;
+
+    // GB XiaomiAuthService.encrypt(): CCM(encKey, [encNonce(4)|0(4)|counter(4)], payload)
+    // aesCcmEncrypt(key, encNonce(4B), data, counter) — 12B nonce'u icinde kurar
+    const { aesCcmEncrypt } = await import('../../src/SppAuthCrypto.js');
+    const ccmCipher = await aesCcmEncrypt(cKeys.encKey, cKeys.encNonce, cPlain, 1);
+    log('info', `[HEX-DEBUG] CCM cipher (${ccmCipher.length}B): ${bytesToHex(ccmCipher)}`);
+
+    // V2 data packet'a koy (SEND_ENCRYPTED)
+    const cSpp = SppPacketV2.buildDataPacket(SppChannel.PROTOBUF_COMMAND, SppDataOpcode.SEND_ENCRYPTED, ccmCipher);
+    log('info', `[HEX-DEBUG] SPP frame (${cSpp.length}B): ${bytesToHex(cSpp)}`);
+    await writeBLE(cSpp);
+    await monitorConnection(30);
   }
 
   log('info', `========== ${tname} END ==========`);

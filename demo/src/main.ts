@@ -81,6 +81,9 @@ let authResolve: ((p: Uint8Array | null) => void) | null = null;
 
 const ackTracker = new SppAckTracker();
 
+// TEST G: skip ACK after auth — kontrol bayragi
+let _skipPostAuthAck = false;
+
 // ── ACK-based CommandQueue (Gadgetbridge txWin=3 flow control) ──
 const cmdQueue = new CommandQueue();
 cmdQueue.onDisconnect = () => {
@@ -152,7 +155,11 @@ function handleSpp(pkt: import('../../src/SppPacketV2.js').ParsedPacket) {
     }
 
     case SppPacketType.DATA: {
-      writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
+      if (!_skipPostAuthAck) {
+        writeBLE(SppPacketV2.buildAck(pkt.sequenceNumber)).catch(() => {});
+      } else {
+        log('info', `[TEST G] ACK seq=${pkt.sequenceNumber} SKIPPED`);
+      }
       const ch = SppChannel[pkt.channel ?? -1] ?? '?';
       log('recv', `DATA ch=${ch} op=${SppDataOpcode[pkt.opcode ?? 0]} payload(${pkt.payload.length}B)`);
       if (pkt.payload.length > 0 && authResolve) {
@@ -287,6 +294,7 @@ const TEST_NAMES: Record<number, string> = {
   19: 'TEST D: Plaintext Protobuf (PROTOBUF_COMMAND)',
   20: 'TEST E: Auth sonrasi idle 30s',
   21: 'TEST F: Encrypted Clock AUTH ch',
+  22: 'TEST G: Auth sonrasi ACK gonderme',
 };
 
 async function runPostAuth(): Promise<void> {
@@ -619,6 +627,13 @@ async function runPostAuth(): Promise<void> {
     log('info', `[HEX-DEBUG] SPP frame (${fSpp.length}B): ${bytesToHex(fSpp)}`);
     await writeBLE(fSpp);
     await monitorConnection(30);
+
+  } else if (test === 22) {
+    // TEST G: Auth sonrasi ACK gonderme — band baglantiyi acik tutuyor mu?
+    log('info', '═══ TEST G: Auth sonrasi ACK gonderilmiyor ═══');
+    _skipPostAuthAck = true;
+    await monitorConnection(30);
+    _skipPostAuthAck = false;
   }
 
   log('info', `========== ${tname} END ==========`);

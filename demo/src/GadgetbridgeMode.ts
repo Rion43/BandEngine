@@ -488,9 +488,11 @@ async function onAuthSuccess(handle: GBDeviceHandle) {
   // 2. systemService.setCurrentTime() (Support.java:410-412)
   //   XiaomiSystemService.java:316-353 -> Command{type=2, subtype=3, system{clock{...}}}
   const clockBuf = encodeCommandClock();
+  log('info', `[GB] Clock plaintext (${clockBuf.length}B): ${toHex(clockBuf)}`);
   const encClock = await handle.authProtocol!.encryptV2(clockBuf);
+  log('info', `[GB] Clock encrypted (${encClock.length}B): ${toHex(encClock)}`);
   const sppClock = encodePacket(handle, SppChannel.PROTOBUF_COMMAND, encClock);
-  log('send', `[GB] Clock seq=${sppClock[3]}`);
+  log('send', `[GB] Clock SPPv2 SEND_ENCRYPTED seq=${sppClock[3]} (${sppClock.length}B): ${toHex(sppClock)}`);
   await writeRaw(handle, sppClock);
 
   // 3. mServiceMap.values().forEach(service.initialize()) (Support.java:414-416)

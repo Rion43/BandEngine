@@ -9,7 +9,7 @@ import { diagWriteDebug } from './BluefyDiagnostic.js';
 import { GBDeviceHandle, gbFullFlow } from './GadgetbridgeMode.js';
 import { CommandQueue } from './CommandQueue.js';
 
-const VERSION = '6.3.2';
+const VERSION = '6.3.3';
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -755,6 +755,4 @@ btnConnect.onclick = async () => {
 };
 initTestSelector();
 
-function toHex(bytes: Uint8Array): string {
-  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
-}
+// toHex imported from SppAuthMessages

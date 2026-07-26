@@ -7,7 +7,7 @@ function getEl(): HTMLElement {
 }
 
 export function log(
-  level: 'sent' | 'recv' | 'info' | 'warn' | 'error',
+  level: 'sent' | 'recv' | 'info' | 'warn' | 'error' | 'ack' | 'send',
   msg: string,
   detail?: unknown,
 ): void {

@@ -1,0 +1,26 @@
+{
+  "expo": {
+    "name": "BandEngine-iOS-Test",
+    "slug": "band-engine-ios-test",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "ios": {
+      "bundleIdentifier": "com.bandengine.iostest",
+      "infoPlist": {
+        "NSBluetoothAlwaysUsageDescription": "This app uses Bluetooth to connect to Xiaomi Smart Band 9 for auth testing.",
+        "NSBluetoothPeripheralUsageDescription": "This app communicates with Xiaomi Smart Band 9 over BLE.",
+        "UIBackgroundModes": [
+          "bluetooth-central",
+          "bluetooth-central"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "supportsTablet": false
+    },
+    "extra": {
+      "eas": {
+        "projectId": "e8cedb5f-3abe-47c7-a7d1-e23de084c20d"
+      }
+    }
+  }
+}

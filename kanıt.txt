@@ -1,0 +1,111 @@
+═══════════════════════════════════════════════════════════════
+  Band 9 TRANSPORT KANITI — BLE vs BT_CLASSIC (RFCOMM/SPP)
+═══════════════════════════════════════════════════════════════
+
+1. KAYNAK KOD KANITI (Gadgetbridge)
+
+   File: MiBand9Coordinator.java — line 45-47
+   ──────────────────────────────────────────
+   @Override
+   public ConnectionType getConnectionType() {
+       return ConnectionType.BT_CLASSIC;
+   }
+
+   → Mi Band 9 sadece BT_CLASSIC olarak işaretlenmiş.
+   → Tüm Xiaomi cihazları aynı: MiBand8Pro, MiBand9Pro,
+     MiBand10, MiBand10Pro, RedmiWatch5 → hepsi BT_CLASSIC.
+   → Hiçbir Xiaomi cihazı BLE veya BOTH kullanmıyor.
+
+2. TRANSPORT SEÇİMİ
+
+   File: XiaomiSupport.java — lines 120-131
+   ──────────────────────────────────────────
+   private XiaomiConnectionSupport createConnectionSpecificSupport() {
+       DeviceCoordinator.ConnectionType connType = getCoordinator().getConnectionType();
+       if (connType == DeviceCoordinator.ConnectionType.BOTH) {
+           connType = getDevicePrefs().getForcedConnectionTypeFromPrefs();
+       }
+       return switch (connType) {
+           case BLE, BOTH -> new XiaomiBleSupport(this);
+           case BT_CLASSIC -> new XiaomiSppSupport(this);    // ← Band 9
+       };
+   }
+
+   → Band 9 → BT_CLASSIC → XiaomiSppSupport (RFCOMM serial)
+   → BLE kullanan cihaz: YOK
+
+3. XiaomiSppSupport — SADECE RFCOMM
+
+   File: XiaomiSppSupport.java — lines 49, 87-88
+   ──────────────────────────────────────────
+   AbstractBTBRDeviceSupport commsSupport = new AbstractBTBRDeviceSupport(...) {
+       protected UUID getSupportedService() {
+           return XiaomiUuids.UUID_SERVICE_SERIAL_PORT_PROFILE;  // 00001101 = SPP
+       }
+   };
+
+   → BLE ile ilgili TEK bir import/çağrı yok.
+   → extends AbstractBTBRDeviceSupport (RFCOMM socket)
+   → BluetoothSocket üzerinden ham byte okuyor/yazıyor
+
+4. PROTOBUF — TRANSPORT ALANI YOK
+
+   xiaomi.proto ve garmin*.proto dahil 21 .proto dosyası tarandı.
+   Aranan: way, transport, classic, spp, ble, channel, comm_way
+   → SONUÇ: HİÇBİRİ BULUNAMADI.
+
+   → Transport kararı protokol seviyesinde değil.
+   → Dinamik "BLE'den SPP'ye geç" komutu yok.
+
+5. TEST SONUÇLARI (Bluefy iOS Web Bluetooth)
+
+   Test   | Ne yapıldı                          | Sonuç
+   ───────┼──────────────────────────────────────┼────────────────
+   A      | Encrypted + SEND_PLAINTEXT opcode    | ~27ms disconnect
+   B      | decKey ile şifrele                   | ~27ms disconnect
+   C      | AES-CCM (V1 style)                   | ~27ms disconnect
+   D      | Plaintext protobuf (şifresiz)        | ~30ms disconnect
+   E      | HİÇBİR ŞEY GÖNDERMEDİ (idle)         | ~64ms disconnect ★
+   F      | Encrypted + AUTH channel             | ~27ms disconnect
+   G      | Auth sonrası ACK göndermedi          | Bekleniyor
+
+   TEST E kritik: Auth'tan 64ms sonra band BLE bağlantısını
+   kendisi kapatıyor. Hiçbir şey göndermesek bile.
+
+6. KARŞILAŞTIRMA: GB vs BE
+
+   Gadgetbridge:
+     connect() → BluetoothSocket (RFCOMM) → SPPv2 paketleri
+     → AUTH → onAuthSuccess → Clock + init komutları
+     → Bağlantı AÇIK kalır.
+
+   BandEngine (Web Bluetooth / BLE):
+     connect() → BLE GATT (005E/005F) → SPPv2 paketleri
+     → AUTH → herhangi bir şey → DISCONNECT
+     → Band BLE'yi kapatıyor.
+
+7. KESİN KARAR
+
+   Mi Band 9 sadece BT_CLASSIC (RFCOMM/SPP) kullanır.
+   BLE sadece auth için bir "ön kapı"dır.
+   Auth tamamlanır tamamlanmaz band BLE'yi kapatır
+   ve RFCOMM bağlantısı bekler.
+
+   Web Bluetooth BLE'den başka bir transport
+   açamadığı için Band 9 ile post-auth iletişim
+   mümkün değildir.
+
+   Protokolde transport switch komutu olmadığı için
+   "BLE üzerinden devam et" seçeneği yoktur.
+
+═══════════════════════════════════════════════════════════════
+  KAYNAK DOSYALAR
+═══════════════════════════════════════════════════════════════
+
+   MiBand9Coordinator.java:45-47
+   XiaomiSupport.java:120-131
+   XiaomiSppSupport.java:49,87-88
+   XiaomiConnectionSupport.java (tümü)
+   AbstractBTBRDeviceSupport.java:63-98
+   DeviceCoordinator.java:122-140
+   xiaomi.proto (tümü)

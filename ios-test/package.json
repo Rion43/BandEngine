@@ -1,0 +1,28 @@
+{
+  "name": "BandEngine-iOS-Test",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "react-native start",
+    "ios": "react-native run-ios",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@noble/ciphers": "^1.2.1",
+    "@noble/hashes": "^1.7.1",
+    "@react-native/metro-config": "^0.86.2",
+    "expo": "^57.0.8",
+    "react": "18.3.1",
+    "react-native": "0.76.9",
+    "react-native-ble-plx": "^3.2.0",
+    "react-native-get-random-values": "^1.11.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@babel/preset-env": "^7.25.0",
+    "@babel/runtime": "^7.25.0",
+    "@types/react": "^18.3.0",
+    "metro-react-native-babel-preset": "^0.77.0",
+    "typescript": "^5.5.0"
+  }
+}

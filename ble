@@ -1,0 +1,139 @@
+STOP.
+
+I found evidence that contradicts the current conclusion.
+
+Do not assume Band 9 simply disconnects BLE and waits for RFCOMM.
+
+Instead, prove the complete transport lifecycle.
+
+Known evidence:
+
+1.
+MiBand9Coordinator returns BT_CLASSIC.
+
+This only proves Gadgetbridge prefers Bluetooth Classic.
+
+It does NOT prove the firmware rejects BLE.
+
+2.
+Official Xiaomi specifications describe Smart Band 9 as:
+
+"Bluetooth Dual Mode BT5.4"
+
+while Smart Band 8 is listed separately as "Bluetooth 5.1 BLE".
+
+This suggests Band 9 supports BOTH BLE and Classic.
+
+3.
+Official Xiaomi Bluetooth protocol documentation defines two commands:
+
+Communication Way
+Way = 0 -> BLE
+Way = 1 -> SPP
+
+and another command:
+
+Wakeup Classic Bluetooth
+
+These commands strongly suggest the protocol can switch transports.
+
+Therefore I need proof whether Band 9 actually performs this switch.
+
+==================================================
+
+Your task:
+
+Search the entire Gadgetbridge Xiaomi module.
+
+I need source-code evidence only.
+
+Find:
+
+1.
+
+Does Band 9 ever send or receive a command that changes transport from BLE to SPP?
+
+Search for:
+
+Way
+Communication Way
+Wakeup Classic Bluetooth
+Channel Switch
+SPP
+RFCOMM
+BLE
+
+2.
+
+Does XiaomiSppSupport first authenticate over BLE?
+
+Or does it immediately open RFCOMM?
+
+Show complete execution path.
+
+3.
+
+Does XiaomiBleProtocolV2 contain ANY code requesting a transport switch?
+
+4.
+
+Does XiaomiSppProtocolV2 contain code expecting authentication to have already completed?
+
+5.
+
+Search protobuf definitions.
+
+Look for any message containing:
+
+transport
+channel
+way
+classic
+spp
+ble
+
+6.
+
+If Band 9 truly disconnects BLE intentionally,
+
+find the exact packet,
+
+protobuf,
+
+opcode,
+
+or firmware command
+
+that requests this disconnect.
+
+If no such command exists,
+
+explicitly say:
+
+NOT PROVEN.
+
+==================================================
+
+I do NOT want assumptions.
+
+I want code.
+
+For every conclusion provide:
+
+filename
+
+function
+
+line numbers
+
+execution path
+
+==================================================
+
+Goal:
+
+Either prove that Band 9 transitions from BLE to RFCOMM,
+
+or prove that no such transition exists.
+
+No speculation.

@@ -1,6 +1,6 @@
 // BLE Manager for Xiaomi Smart Band 9 on iOS
 // Uses react-native-ble-plx (CoreBluetooth bridge)
-import { BleManager, Device, Characteristic } from 'react-native-ble-plx';
+import { BleManager, Device, Characteristic, Subscription } from 'react-native-ble-plx';
 import { BLE_SERVICE_UUID } from './types';
 import {
   SppPacketV2,
@@ -27,28 +27,28 @@ export class BandBleManager {
   private notifyQueue: Uint8Array[] = [];
   private notifyResolve: ((d: Uint8Array) => void) | null = null;
 
+  // Parsed SPP packet queue for packet-level waiting
+  private packetQueue: ParsedPacket[] = [];
+  private packetResolve: ((pkt: ParsedPacket) => void) | null = null;
+
+  // Track last processed buffer position to prevent duplicate SPP feed
+  private lastBufferHash = 0;
+
+  // Disconnect subscription
+  private disconnectSub: Subscription | null = null;
+
   // Callbacks
   private _onLog: BleStatusCallback = () => {};
   private _onDisconnect?: () => void;
   private _onPacket?: (pkt: ParsedPacket) => void;
 
-  set onLog(cb: BleStatusCallback) {
-    this._onLog = cb;
-  }
-  set onDisconnect(cb: (() => void) | undefined) {
-    this._onDisconnect = cb;
-  }
-  set onPacket(cb: ((pkt: ParsedPacket) => void) | undefined) {
-    this._onPacket = cb;
-  }
+  set onLog(cb: BleStatusCallback) { this._onLog = cb; }
+  set onDisconnect(cb: (() => void) | undefined) { this._onDisconnect = cb; }
+  set onPacket(cb: ((pkt: ParsedPacket) => void) | undefined) { this._onPacket = cb; }
 
-  get isConnected(): boolean {
-    return this.device !== null;
-  }
+  get isConnected(): boolean { return this.device !== null; }
 
-  constructor() {
-    this.manager = new BleManager();
-  }
+  constructor() { this.manager = new BleManager(); }
 
   /** Scan for devices advertising FE95, auto-connect to first found */
   async scanAndConnect(scanTimeoutMs = 15000): Promise<void> {
@@ -56,7 +56,6 @@ export class BandBleManager {
 
     const devices: Device[] = [];
 
-    // Wrap scan in a promise
     await new Promise<void>((resolve, reject) => {
       const scanTimer = setTimeout(() => {
         this.manager.stopDeviceScan();
@@ -77,7 +76,6 @@ export class BandBleManager {
           }
           if (scannedDevice && scannedDevice.name) {
             const name = scannedDevice.name;
-            // Accept any device with FE95 service + Xiaomi name
             if (
               name.toLowerCase().includes('xiaomi') ||
               name.toLowerCase().includes('smart band')
@@ -103,11 +101,11 @@ export class BandBleManager {
     this.log('Services discovered.');
 
     // Get characteristics from FE95 service
-    const chars = await target.characteristics(BLE_SERVICE_UUID);
-    const wChar = chars.find(c =>
+    const allChars = await target.characteristicsForService(BLE_SERVICE_UUID);
+    const wChar = allChars.find((c: Characteristic) =>
       c.uuid.toLowerCase().includes('005f'),
     );
-    const nChar = chars.find(c =>
+    const nChar = allChars.find((c: Characteristic) =>
       c.uuid.toLowerCase().includes('005e'),
     );
     if (!wChar || !nChar) {
@@ -118,16 +116,17 @@ export class BandBleManager {
     this.log(`Write=${wChar.uuid} Notify=${nChar.uuid}`);
 
     // Disconnect handler
-    target.onDisconnected(() => {
-      this.log('❗ DISCONNECTED');
+    const disSub = target.onDisconnected(() => {
+      this.log('DISCONNECTED');
       this.device = null;
       this.writeChar = null;
       this.notifyChar = null;
       this._onDisconnect?.();
     });
+    this.disconnectSub = disSub;
 
     // Enable notifications
-    nChar.monitor((err, char) => {
+    nChar.monitor((err: import('react-native-ble-plx').BleError | null, char: Characteristic | null) => {
       if (err) {
         this.log(`Notify error: ${err.message}`);
         return;
@@ -141,32 +140,25 @@ export class BandBleManager {
     // Reset SPP state
     this.sppBuffer = new Uint8Array();
     SppPacketV2.resetSequence();
-    this.log('✓ Notifications enabled');
+    this.log('Notifications enabled');
   }
 
   /** Write bytes to the write characteristic (with response) */
   async write(data: Uint8Array): Promise<void> {
-    if (!this.writeChar || !this.device) {
-      throw new Error('BLE not connected');
-    }
-    const b64 = this.bytesToBase64(data);
-    await this.writeChar.writeWithResponse(b64);
+    if (!this.writeChar || !this.device) throw new Error('BLE not connected');
+    await this.writeChar.writeWithResponse(this.bytesToBase64(data));
   }
 
-  /** Write bytes without response (faster, used for ACKs) */
+  /** Write bytes without response */
   async writeWoR(data: Uint8Array): Promise<void> {
-    if (!this.writeChar || !this.device) {
-      throw new Error('BLE not connected');
-    }
-    const b64 = this.bytesToBase64(data);
-    await this.writeChar.writeWithoutResponse(b64);
+    if (!this.writeChar || !this.device) throw new Error('BLE not connected');
+    await this.writeChar.writeWithoutResponse(this.bytesToBase64(data));
   }
 
-  /** Send SPPv2 DataPacket (auto-selects opcode by channel) */
+  /** Send SPPv2 DataPacket */
   async sendDataPacket(channel: SppChannel, payload: Uint8Array): Promise<void> {
     const opcode = getOpCodeForChannel(channel);
-    const packet = SppPacketV2.buildDataPacket(channel, opcode, payload);
-    await this.write(packet);
+    await this.write(SppPacketV2.buildDataPacket(channel, opcode, payload));
   }
 
   /** Wait for exactly one raw notification payload */
@@ -187,16 +179,31 @@ export class BandBleManager {
     });
   }
 
-  /** Drain pending SPP packets after a write */
+  /** Wait for parsed SPP DATA packet */
+  waitForPacket(timeoutMs: number): Promise<ParsedPacket> {
+    return new Promise((resolve, reject) => {
+      if (this.packetQueue.length > 0) {
+        resolve(this.packetQueue.shift()!);
+        return;
+      }
+      const timer = setTimeout(() => {
+        if (this.packetResolve === resolve) this.packetResolve = null;
+        reject(new Error(`Packet timeout ${timeoutMs}ms`));
+      }, timeoutMs);
+      this.packetResolve = (p: ParsedPacket) => {
+        clearTimeout(timer);
+        resolve(p);
+      };
+    });
+  }
+
+  /** Drain pending notifications after a write (used for session config) */
   async drainNotifications(initialTimeout: number): Promise<void> {
     try {
-      const n = await this.waitForNotification(initialTimeout);
-      this.feedSpp(n);
-      await delay(300);
+      await this.waitForNotification(initialTimeout);
       for (let i = 0; i < 5; i++) {
         try {
-          const extra = await this.waitForNotification(1500);
-          this.feedSpp(extra);
+          await this.waitForNotification(1500);
         } catch {
           break;
         }
@@ -214,21 +221,23 @@ export class BandBleManager {
     this.sppBuffer = new Uint8Array();
     this.notifyQueue = [];
     this.notifyResolve = null;
+    this.packetQueue = [];
+    this.packetResolve = null;
   }
 
   // ── Private ──
 
-  private log(msg: string): void {
-    this._onLog(msg);
-  }
+  private log(msg: string): void { this._onLog(msg); }
 
   private onBleNotify(value: Uint8Array): void {
+    // Save raw notification for waitForNotification
     if (this.notifyResolve) {
       this.notifyResolve(value);
       this.notifyResolve = null;
     } else {
       this.notifyQueue.push(value);
     }
+    // Feed to SPP parser (single path — avoids duplicate processing)
     this.feedSpp(value);
   }
 
@@ -241,7 +250,9 @@ export class BandBleManager {
   }
 
   private processSpp(): void {
-    while (this.sppBuffer.length >= 2) {
+    let maxIter = 32; // safety limit — prevent infinite loops
+    while (this.sppBuffer.length >= 2 && maxIter-- > 0) {
+      // Find valid preamble
       if (this.sppBuffer[0] !== 0xa5 || this.sppBuffer[1] !== 0xa5) {
         let next = -1;
         for (let i = 1; i < this.sppBuffer.length - 1; i++) {
@@ -264,7 +275,8 @@ export class BandBleManager {
       const bytes = this.sppBuffer.slice(0, size);
       this.sppBuffer = this.sppBuffer.slice(size);
       const pkt = SppPacketV2.decode(bytes);
-      if (!pkt) continue;
+      if (!pkt) continue; // decode failed (CRC mismatch), skip
+
       this.handleSpp(pkt);
     }
   }
@@ -288,6 +300,14 @@ export class BandBleManager {
         const ch = SppChannel[pkt.channel ?? -1] ?? '?';
         const op = SppDataOpcode[pkt.opcode ?? 0] ?? '?';
         this.log(`DATA ch=${ch} op=${op} payload(${pkt.payload.length}B)`);
+
+        // Enqueue for packet-level waiters
+        if (this.packetResolve) {
+          this.packetResolve(pkt);
+          this.packetResolve = null;
+        } else {
+          this.packetQueue.push(pkt);
+        }
         break;
       }
 
@@ -303,28 +323,18 @@ export class BandBleManager {
 
   private bytesToBase64(bytes: Uint8Array): string {
     let bin = '';
-    for (let i = 0; i < bytes.length; i++) {
-      bin += String.fromCharCode(bytes[i]);
-    }
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
     return btoa(bin);
   }
 
   private base64ToBytes(b64: string): Uint8Array {
     const bin = atob(b64);
     const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) {
-      bytes[i] = bin.charCodeAt(i);
-    }
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return bytes;
   }
 }
 
 function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join(' ');
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(r => setTimeout(r, ms));
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ');
 }

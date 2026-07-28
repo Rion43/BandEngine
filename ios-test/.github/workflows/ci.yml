@@ -1,0 +1,117 @@
+name: CI + iOS Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_ios:
+        description: 'Build unsigned .app'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    name: TypeScript Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+
+  ios_build:
+    name: iOS Build
+    if: github.event_name == 'workflow_dispatch' || vars.IOS_BUILD_ON_PUSH == 'true'
+    needs: typecheck
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Expo prebuild
+        run: npx expo prebuild --platform ios --clean --no-install
+        env:
+          EXPO_DEBUG: true
+
+      - name: Patch Podfile (use_frameworks + ReactAppDependencyProvider)
+        run: |
+          cd ios
+          if ! grep -q "use_frameworks" Podfile; then
+            ruby -e '
+              lines = File.readlines("Podfile")
+              idx = lines.index { |l| l.strip.start_with?("target") }
+              lines.insert(idx, "use_frameworks! :linkage => :static\n")
+              File.write("Podfile", lines.join)
+            '
+            echo "✓ Patched use_frameworks! :linkage => :static"
+          fi
+          ruby -e '
+            lines = File.readlines("Podfile")
+            lines.reject! { |l| l.include?("ReactAppDependencyProvider") }
+            idx = lines.index { |l| l.strip.start_with?("post_install") }
+            if idx
+              lines.insert(idx, "pod \"ReactAppDependencyProvider\", :path => \"../.\"\n")
+            else
+              last_end = lines.rindex { |l| l.strip == "end" }
+              lines.insert(last_end, "pod \"ReactAppDependencyProvider\", :path => \"../.\"\n")
+            end
+            File.write("Podfile", lines.join)
+          '
+          echo "✓ Podfile patched"
+
+      - name: CocoaPods install
+        run: pod install --repo-update
+        working-directory: ios
+
+      - name: Build .app (unsigned)
+        run: |
+          cd ios
+          xcodebuild \
+            -workspace BandEngineiOSTest.xcworkspace \
+            -scheme BandEngineiOSTest \
+            -configuration Debug \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY= \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            FB_SONARKIT_ENABLED=NO \
+            GCC_PREPROCESSOR_DEFITIONS='$(inherited) FB_SONARKIT_ENABLED=0'
+
+      - name: Package .app
+        run: |
+          APP_PATH="ios/build/Build/Products/Debug-iphoneos"
+          APP_NAME=$(ls "$APP_PATH" | grep '\.app$' | head -1)
+          [ -z "$APP_NAME" ] && echo "FAIL .app not found" && exit 1
+          cd "$APP_PATH"
+          zip -r "$GITHUB_WORKSPACE/BandEngine-iOS-Test.zip" "$APP_NAME" -x "*.dSYM/*"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BandEngine-iOS-Test
+          path: BandEngine-iOS-Test.zip
+          if-no-files-found: error
+
+      - if: failure()
+        run: |
+          grep -n "ReactAppDependencyProvider" ios/Podfile 2>/dev/null || true
+          cat ios/Podfile.lock 2>/dev/null || true

@@ -12,7 +12,7 @@ import {
 } from 'react-native';
 import { BandBleManager } from './src/BandBleManager';
 import { SppAuthProtocol } from './src/SppAuthProtocol';
-import { SppPacketV2, SppChannel, SppDataOpcode, ParsedPacket, SessionConfigOpcode } from './src/SppPacketV2';
+import { SppPacketV2, SppChannel, SppDataOpcode, SppPacketType } from './src/SppPacketV2';
 import { bytesToHex } from './src/SppAuthMessages';
 
 type AppPhase =
@@ -48,11 +48,7 @@ export default function App() {
   const log = useCallback(
     (text: string, level: LogEntry['level'] = 'info') => {
       const ts = new Date().toISOString().slice(11, 23);
-      setLogs(prev => {
-        const next = [...prev, { ts, text, level }];
-        return next;
-      });
-      // Auto-scroll after render
+      setLogs(prev => [...prev, { ts, text, level }]);
       setTimeout(() => scrollRef.current?.scrollToEnd({ animated: false }), 50);
     },
     [],
@@ -80,7 +76,6 @@ export default function App() {
 
     const ble = new BandBleManager();
     bleRef.current = ble;
-
     ble.onLog = (msg: string) => addLog(msg);
 
     try {
@@ -97,29 +92,39 @@ export default function App() {
       const scPacket = SppPacketV2.buildSessionConfigRequest();
       addLog(`SessionConfig (${scPacket.length}B): ${bytesToHex(scPacket)}`, 'send');
       await ble.write(scPacket);
-      addLog('Waiting for SessionConfig response...', 'info');
+      // Drain notifications — SPP layer inside BandBleManager already feeds them
       await ble.drainNotifications(15000);
       addLog('✓ Session Config done', 'info');
 
-      // ── 3. Auth: PhoneNonce (CMD_NONCE=26) ──
+      // ── 3. Auth: PhoneNonce → WatchNonce ──
       addLog('[3/5] Auth PhoneNonce...', 'info');
       setPhase('phone_nonce');
       const auth = new SppAuthProtocol(ltkBytes);
       authRef.current = auth;
       const { nonce, packet: pnPacket } = auth.buildPhoneNonce();
+
+      // Build SPP data packet AND WRITE IT (bug fix: was missing write)
       const sppPn = SppPacketV2.buildDataPacket(
         SppChannel.AUTHENTICATION,
         SppDataOpcode.SEND_PLAINTEXT,
         pnPacket,
       );
       addLog(`PhoneNonce seq=${sppPn[3]}: ${bytesToHex(pnPacket)}`, 'send');
-      setPhase('watch_nonce');
+      await ble.write(sppPn); // <-- CRITICAL: was missing!
 
       // Wait for WatchNonce response
-      const wnPayload = await ble.waitForNotification(10000);
-      addLog(`WatchNonce raw (${wnPayload.length}B): ${bytesToHex(wnPayload)}`, 'recv');
+      setPhase('watch_nonce');
+      const wnRaw = await ble.waitForNotification(10000);
+      addLog(`WatchNonce raw (${wnRaw.length}B): ${bytesToHex(wnRaw)}`, 'recv');
 
-      const step3 = await auth.processWatchNonce(wnPayload);
+      // Parse SPP frame to extract auth payload (bug fix: was passing raw frame)
+      const wnSpp = SppPacketV2.decode(wnRaw);
+      if (!wnSpp || wnSpp.packetType !== SppPacketType.DATA) {
+        throw new Error('WatchNonce: expected SPP DATA packet');
+      }
+      addLog(`WatchNonce decoded: ch=${wnSpp.channel} op=${wnSpp.opcode} payload(${wnSpp.payload.length}B)`, 'info');
+
+      const step3 = await auth.processWatchNonce(wnSpp.payload);
       if (!step3) {
         throw new Error('WatchNonce decode/verify failed');
       }
@@ -134,20 +139,27 @@ export default function App() {
         step3.authStep3Packet,
       );
       addLog(`AuthStep3 seq=${sppA3[3]}: ${bytesToHex(step3.authStep3Packet)}`, 'send');
+      await ble.write(sppA3); // <-- CRITICAL: was missing!
 
-      const authPayload = await ble.waitForNotification(10000);
-      addLog(`Auth response (${authPayload.length}B): ${bytesToHex(authPayload)}`, 'recv');
+      const authRaw = await ble.waitForNotification(10000);
+      addLog(`Auth response raw (${authRaw.length}B): ${bytesToHex(authRaw)}`, 'recv');
 
-      const authOk = auth.processAuthResponse(authPayload);
-      if (!authOk) {
-        throw new Error('Auth FAILED — band rejected credentials');
+      // Parse SPP frame for auth response
+      const authSpp = SppPacketV2.decode(authRaw);
+      if (!authSpp || authSpp.packetType !== SppPacketType.DATA) {
+        throw new Error('Auth response: expected SPP DATA packet');
       }
 
-      addLog('🎉 AUTH SUCCESS!', 'info');
+      const authOk = auth.processAuthResponse(authSpp.payload);
+      if (!authOk) {
+        throw new Error('Auth FAILED - band rejected credentials');
+      }
+
+      addLog('AUTH SUCCESS!', 'info');
       setPhase('auth_success');
 
       // ── 5. Idle 10s watch ──
-      addLog('[5/5] Idle 10s — watching connection...', 'info');
+      addLog('[5/5] Idle 10s - watching connection...', 'info');
       setPhase('idle_10s');
 
       let disconnectedAt: number | null = null;
@@ -161,14 +173,14 @@ export default function App() {
         if (!stillConnected) {
           disconnectedAt = i;
           setConnectionStayed(false);
-          addLog(`❌ Connection LOST at ${i}s`, 'error');
+          addLog(`Connection LOST at ${i}s`, 'error');
           break;
         }
       }
 
       if (disconnectedAt === null) {
         setConnectionStayed(true);
-        addLog('✅ Connection stayed alive for 10s!', 'info');
+        addLog('Connection stayed alive for 10s!', 'info');
         addLog('RESULT: Band 9 keeps BLE alive via CoreBluetooth', 'info');
       } else {
         addLog(`RESULT: Band 9 dropped BLE at ${disconnectedAt}s via CoreBluetooth`, 'warn');
@@ -177,7 +189,7 @@ export default function App() {
       setPhase('done');
     } catch (e: any) {
       const msg = e?.message ?? String(e);
-      addLog(`❌ ERROR: ${msg}`, 'error');
+      addLog(`ERROR: ${msg}`, 'error');
       setPhase('error');
     }
   };
@@ -202,7 +214,6 @@ export default function App() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>BandEngine</Text>
         <Text style={styles.subtitle}>iOS BLE Auth Test</Text>
@@ -226,7 +237,6 @@ export default function App() {
         </View>
       </View>
 
-      {/* LTK Input */}
       <View style={styles.ltkRow}>
         <Text style={styles.label}>LTK (32 hex):</Text>
         <TextInput
@@ -242,7 +252,6 @@ export default function App() {
         <Text style={styles.counter}>{ltk.length}/32</Text>
       </View>
 
-      {/* Buttons */}
       <View style={styles.btnRow}>
         {!isRunning ? (
           <TouchableOpacity
@@ -250,12 +259,12 @@ export default function App() {
             disabled={!isValidLtk}
             onPress={handleConnect}>
             <Text style={styles.btnText}>
-              {phase === 'error' ? '🔄 Retry' : '🔗 Connect & Auth'}
+              {phase === 'error' ? 'Retry' : 'Connect & Auth'}
             </Text>
           </TouchableOpacity>
         ) : (
           <TouchableOpacity style={[styles.btn, styles.btnDanger]} onPress={handleDisconnect}>
-            <Text style={styles.btnText}>⏹ Disconnect</Text>
+            <Text style={styles.btnText}>Disconnect</Text>
           </TouchableOpacity>
         )}
         <TouchableOpacity style={styles.btnReset} onPress={handleReset}>
@@ -263,7 +272,6 @@ export default function App() {
         </TouchableOpacity>
       </View>
 
-      {/* Result Banner */}
       {connectionStayed !== null && (
         <View
           style={[
@@ -272,13 +280,12 @@ export default function App() {
           ]}>
           <Text style={styles.resultText}>
             {connectionStayed
-              ? '✅ Band 9 BLE stayed connected 10s'
-              : `❌ Band 9 dropped BLE at ${idleElapsed}s`}
+              ? 'Band 9 BLE stayed connected 10s'
+              : `Band 9 dropped BLE at ${idleElapsed}s`}
           </Text>
         </View>
       )}
 
-      {/* Idle Timer Bar */}
       {phase === 'idle_10s' && (
         <View style={styles.timerBar}>
           <View style={[styles.timerFill, { width: `${idleElapsed * 10}%` }]} />
@@ -286,7 +293,6 @@ export default function App() {
         </View>
       )}
 
-      {/* Log */}
       <View style={styles.logContainer}>
         <Text style={styles.logTitle}>Log</Text>
         <ScrollView ref={scrollRef} style={styles.logScroll}>
@@ -305,186 +311,56 @@ function delay(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// ── Styles ──
-
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#0d1117',
     padding: 12,
   },
-  header: {
-    marginBottom: 12,
-  },
-  title: {
-    color: '#58a6ff',
-    fontSize: 22,
-    fontWeight: '800',
-  },
-  subtitle: {
-    color: '#8b949e',
-    fontSize: 13,
-  },
-  phaseRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  phaseDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 8,
-  },
-  phaseText: {
-    color: '#c9d1d9',
-    fontSize: 13,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-  },
-  ltkRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  label: {
-    color: '#8b949e',
-    fontSize: 13,
-    marginRight: 8,
-  },
+  header: { marginBottom: 12 },
+  title: { color: '#58a6ff', fontSize: 22, fontWeight: '800' },
+  subtitle: { color: '#8b949e', fontSize: 13 },
+  phaseRow: { flexDirection: 'row', alignItems: 'center', marginTop: 6 },
+  phaseDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
+  phaseText: { color: '#c9d1d9', fontSize: 13, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace' },
+  ltkRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  label: { color: '#8b949e', fontSize: 13, marginRight: 8 },
   input: {
-    flex: 1,
-    backgroundColor: '#161b22',
-    color: '#c9d1d9',
-    fontSize: 14,
+    flex: 1, backgroundColor: '#161b22', color: '#c9d1d9', fontSize: 14,
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#30363d',
+    paddingHorizontal: 10, paddingVertical: 8, borderRadius: 6,
+    borderWidth: 1, borderColor: '#30363d',
   },
-  inputError: {
-    borderColor: '#ff4444',
-  },
-  counter: {
-    color: '#8b949e',
-    fontSize: 12,
-    marginLeft: 6,
-    width: 36,
-    textAlign: 'right',
-  },
-  btnRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  btn: {
-    flex: 1,
-    backgroundColor: '#238636',
-    paddingVertical: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  btnDisabled: {
-    opacity: 0.4,
-  },
-  btnDanger: {
-    backgroundColor: '#da3633',
-  },
-  btnReset: {
-    backgroundColor: '#21262d',
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  btnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  resultBanner: {
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  resultSuccess: {
-    backgroundColor: '#1a3a1a',
-  },
-  resultFail: {
-    backgroundColor: '#3a1a1a',
-  },
-  resultText: {
-    color: '#c9d1d9',
-    fontSize: 14,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
+  inputError: { borderColor: '#ff4444' },
+  counter: { color: '#8b949e', fontSize: 12, marginLeft: 6, width: 36, textAlign: 'right' },
+  btnRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  btn: { flex: 1, backgroundColor: '#238636', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  btnDisabled: { opacity: 0.4 },
+  btnDanger: { backgroundColor: '#da3633' },
+  btnReset: { backgroundColor: '#21262d', paddingVertical: 12, paddingHorizontal: 16, borderRadius: 8, alignItems: 'center' },
+  btnText: { color: '#fff', fontSize: 14, fontWeight: '600' },
+  resultBanner: { padding: 10, borderRadius: 8, marginBottom: 8 },
+  resultSuccess: { backgroundColor: '#1a3a1a' },
+  resultFail: { backgroundColor: '#3a1a1a' },
+  resultText: { color: '#c9d1d9', fontSize: 14, fontWeight: '700', textAlign: 'center' },
   timerBar: {
-    height: 24,
-    backgroundColor: '#161b22',
-    borderRadius: 12,
-    overflow: 'hidden',
-    marginBottom: 8,
-    position: 'relative',
-    justifyContent: 'center',
+    height: 24, backgroundColor: '#161b22', borderRadius: 12, overflow: 'hidden',
+    marginBottom: 8, position: 'relative', justifyContent: 'center',
   },
-  timerFill: {
-    position: 'absolute',
-    left: 0,
-    top: 0,
-    bottom: 0,
-    backgroundColor: '#1f6feb',
-    borderRadius: 12,
-  },
-  timerText: {
-    color: '#c9d1d9',
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-    zIndex: 1,
-  },
+  timerFill: { position: 'absolute', left: 0, top: 0, bottom: 0, backgroundColor: '#1f6feb', borderRadius: 12 },
+  timerText: { color: '#c9d1d9', fontSize: 12, fontWeight: '700', textAlign: 'center', zIndex: 1 },
   logContainer: {
-    flex: 1,
-    backgroundColor: '#161b22',
-    borderRadius: 8,
-    padding: 8,
-    borderWidth: 1,
-    borderColor: '#30363d',
+    flex: 1, backgroundColor: '#161b22', borderRadius: 8, padding: 8,
+    borderWidth: 1, borderColor: '#30363d',
   },
-  logTitle: {
-    color: '#8b949e',
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 4,
-    textTransform: 'uppercase',
-  },
-  logScroll: {
-    flex: 1,
-  },
-  logLine: {
-    color: '#c9d1d9',
-    fontSize: 11,
-    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
-    lineHeight: 16,
-  },
-  logTs: {
-    color: '#484f58',
-  },
+  logTitle: { color: '#8b949e', fontSize: 11, fontWeight: '600', marginBottom: 4, textTransform: 'uppercase' },
+  logScroll: { flex: 1 },
+  logLine: { color: '#c9d1d9', fontSize: 11, fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace', lineHeight: 16 },
+  logTs: { color: '#484f58' },
   log_info: {},
-  log_warn: {
-    color: '#d29922',
-  },
-  log_error: {
-    color: '#ff4444',
-  },
-  log_data: {
-    color: '#58a6ff',
-  },
-  log_send: {
-    color: '#7ee787',
-  },
-  log_recv: {
-    color: '#79c0ff',
-  },
+  log_warn: { color: '#d29922' },
+  log_error: { color: '#ff4444' },
+  log_data: { color: '#58a6ff' },
+  log_send: { color: '#7ee787' },
+  log_recv: { color: '#79c0ff' },
 });

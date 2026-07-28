@@ -1,0 +1,95 @@
+name: iOS Simulator Build
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator_build:
+    name: iOS Simulator Build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Expo prebuild
+        run: npx expo prebuild --platform ios --clean --no-install
+        env:
+          EXPO_DEBUG: true
+
+      - name: Patch Podfile (use_frameworks + ReactAppDependencyProvider)
+        run: |
+          cd ios
+          # use_frameworks! :linkage => :static
+          if ! grep -q "use_frameworks" Podfile; then
+            ruby -e '
+              lines = File.readlines("Podfile")
+              idx = lines.index { |l| l.strip.start_with?("target") }
+              lines.insert(idx, "use_frameworks! :linkage => :static\n")
+              File.write("Podfile", lines.join)
+            '
+            echo "✓ Patched use_frameworks"
+          fi
+          # ReactAppDependencyProvider local path
+          ruby -e '
+            lines = File.readlines("Podfile")
+            lines.reject! { |l| l.include?("ReactAppDependencyProvider") }
+            idx = lines.index { |l| l.strip.start_with?("post_install") }
+            if idx
+              lines.insert(idx, "pod \"ReactAppDependencyProvider\", :path => \"../.\"\n")
+            else
+              last_end = lines.rindex { |l| l.strip == "end" }
+              lines.insert(last_end, "pod \"ReactAppDependencyProvider\", :path => \"../.\"\n")
+            end
+            File.write("Podfile", lines.join)
+          '
+          echo "✓ Patched ReactAppDependencyProvider"
+
+      - name: Install Pods
+        run: pod install --repo-update
+        working-directory: ios
+
+      - name: Build for Simulator
+        run: |
+          cd ios
+          PROJECT=$(find . -maxdepth 1 -name "*.xcodeproj" -type d | head -1)
+          PROJECT_NAME=$(basename "$PROJECT")
+          SCHEME="${PROJECT_NAME%.xcodeproj}"
+          echo "Project=$PROJECT_NAME Scheme=$SCHEME"
+          xcodebuild \
+            -project "$PROJECT_NAME" \
+            -scheme "$SCHEME" \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY= \
+            PROVISIONING_PROFILE_SPECIFIER=
+
+      - name: Package .app
+        run: |
+          APP_PATH=$(find ios/build/Build/Products/Debug-iphonesimulator -name "*.app" | head -1)
+          echo "Found: $APP_PATH"
+          tar -czf "$GITHUB_WORKSPACE/BandEngine-iOS-Simulator.tar.gz" -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BandEngine-iOS-Simulator
+          path: BandEngine-iOS-Simulator.tar.gz
+          if-no-files-found: error

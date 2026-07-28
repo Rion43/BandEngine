@@ -1,0 +1,18 @@
+{
+  "project": "ios-test",
+  "platform": "ios",
+  "github": {
+    "owner": "Rion43",
+    "repo": "ios-test"
+  },
+  "ios": {
+    "path": "C:\\Users\\PC1\\Desktop\\BandEngine\\ios-test"
+  },
+  "flutter": {
+    "watch": {}
+  },
+  "reactNative": {
+    "expo": true
+  },
+  "mobai": {}
+}

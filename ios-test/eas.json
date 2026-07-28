@@ -1,28 +1,11 @@
 {
-  "cli": {
-    "version": ">= 3.0.0"
-  },
   "build": {
-    "development": {
+    "development-simulator": {
       "developmentClient": true,
       "distribution": "internal",
       "ios": {
-        "simulator": false
-      }
-    },
-    "preview": {
-      "distribution": "internal",
-      "ios": {
-        "simulator": false
-      }
-    },
-    "production": {
-      "ios": {
-        "simulator": false
+        "simulator": true
       }
     }
-  },
-  "submit": {
-    "production": {}
   }
 }

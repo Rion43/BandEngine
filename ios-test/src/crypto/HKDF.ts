@@ -1,9 +1,9 @@
-// HKDF-HMAC-SHA256 using @noble/hashes (replaces Web Crypto API)
+// HKDF-HMAC-SHA256 using @noble/hashes
 import { hmac } from '@noble/hashes/hmac';
 import { sha256 } from '@noble/hashes/sha256';
-import { concatBytes, createView } from '@noble/hashes/utils';
+import { concatBytes } from '@noble/hashes/utils';
 
-const BLOCK_SIZE = 32; // SHA-256 output length
+const BLOCK_SIZE = 32;
 const SESSION_KEY_LENGTH = 64;
 
 export class HKDF {
@@ -17,8 +17,8 @@ export class HKDF {
   }
 
   private static extract(ikm: Uint8Array, salt: Uint8Array): Uint8Array {
-    // HMAC-SHA256(salt, ikm)
-    return hmac(sha256, salt, ikm);
+    const result = hmac(sha256, salt, ikm);
+    return Uint8Array.from(result);
   }
 
   private static expand(
@@ -32,7 +32,7 @@ export class HKDF {
 
     for (let i = 1; i <= n; i++) {
       const data = concatBytes(prev, info, new Uint8Array([i]));
-      prev = hmac(sha256, prk, data);
+      prev = Uint8Array.from(hmac(sha256, prk, data));
       blocks.push(prev);
     }
 

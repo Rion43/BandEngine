@@ -91,13 +91,17 @@ export class SppAuthProtocol {
 
     this._keys = { decKey, encKey, decNonce, encNonce };
 
-    // Verify watch HMAC
-    const valid = await verifyWatchHmac(
+    // Verify watch HMAC — reject if band isn't who we expect
+    const hmacValid = await verifyWatchHmac(
       decKey,
       decoded.nonce,
       this._phoneNonce,
       decoded.hmac,
     );
+    if (!hmacValid) {
+      console.error('[SppAuthProtocol] Watch HMAC verification FAILED');
+      return null;
+    }
 
     // Build encrypted nonces
     const encryptedNonces = await computeEncryptedNonces(

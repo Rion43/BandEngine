@@ -1,0 +1,51 @@
+name: iOS Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Install Pods
+        run: |
+          cd ios
+          pod install --repo-update
+          cd ..
+          
+      - name: Build for Simulator
+        run: |
+          cd ios
+          xcodebuild build \
+            -workspace ios-test.xcworkspace \
+            -scheme ios-test \
+            -sdk iphonesimulator \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            -derivedDataPath build
+            
+      - name: Package .app
+        run: |
+          APP_PATH=$(find ios/build/Build/Products -name "*.app" | head -1)
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ .app bulunamadı!"
+            exit 1
+          fi
+          echo "📦 Bulunan: $APP_PATH"
+          tar -czf app.tar.gz -C "$(dirname "$APP_PATH")" "$(basename "$APP_PATH")"
+          
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app
+          path: app.tar.gz
+          retention-days: 14
